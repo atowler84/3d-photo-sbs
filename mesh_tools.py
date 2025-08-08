@@ -28,6 +28,7 @@ import os
 from utils import refine_depth_around_edge, smooth_cntsyn_gap
 from utils import require_depth_edge, filter_irrelevant_edge_new, open_small_mask
 from skimage.feature import canny
+from skimage.morphology import skeletonize
 from scipy import ndimage
 import time
 import transforms3d
@@ -204,8 +205,36 @@ def extrapolate(global_mesh,
 
     depth_edge_output = depth_edge_model.forward_3P(t_mask, t_context, t_rgb, t_disp, t_edge, unit_length=128,
                                                     cuda=device)
-    t_output_edge = (depth_edge_output> config['ext_edge_threshold']).float() * t_mask + t_edge
+    # keep a probability-style map for debug/normalization
+    prob_edge = torch.sigmoid(depth_edge_output) if depth_edge_output.dtype.is_floating_point else depth_edge_output
+    t_output_edge = (depth_edge_output > config['ext_edge_threshold']).float() * t_mask + t_edge
     output_raw_edge = t_output_edge.data.cpu().numpy().squeeze()
+    # Optional debug dump of intermediate maps
+    try:
+        if os.environ.get('DEBUG_MODE') is not None:
+            dbg_dir = os.environ.get('DEBUG_DIR') or os.path.join(os.path.dirname(__file__), 'static')
+            os.makedirs(dbg_dir, exist_ok=True)
+            # deterministic-ish filenames per call sequence
+            ts = int(time.time()*1000)
+            base = f"edge_{direc}_{ts}"
+            # save both binarized and normalized edge maps for inspection
+            er = (output_raw_edge>0).astype(np.uint8)*255
+            mk = (mask>0).astype(np.uint8)*255
+            cx = (context>0).astype(np.uint8)*255
+            # normalized probability map inside the valid region only
+            pe = prob_edge.data.cpu().numpy().squeeze()
+            pe = pe * context
+            if pe.max() > 1e-6:
+                pe_norm = (pe - pe.min()) / (pe.max() - pe.min())
+            else:
+                pe_norm = pe
+            pe_img = (pe_norm*255).astype(np.uint8)
+            cv2.imwrite(os.path.join(dbg_dir, base + "_edge_raw.png"), er)
+            cv2.imwrite(os.path.join(dbg_dir, base + "_mask.png"), mk)
+            cv2.imwrite(os.path.join(dbg_dir, base + "_context.png"), cx)
+            cv2.imwrite(os.path.join(dbg_dir, base + "_edge_prob.png"), pe_img)
+    except Exception:
+        pass
     # import pdb; pdb.set_trace()
     mesh = netx.Graph()
     hxs, hys = np.where(output_raw_edge * mask > 0)
@@ -390,9 +419,14 @@ def extrapolate(global_mesh,
                 continue
             if fpath_map[nex, ney] == n_id:
                 if global_mesh.nodes[self_node].get('edge_id') is None:
-                    global_mesh.nodes[self_node]['edge_id'] = n_id
-                    edge_ccs[n_id].add(self_node)
-                    info_on_pix[(self_node[0], self_node[1])][0]['edge_id'] = n_id
+                    # Guard against invalid edge ids
+                    if 0 <= n_id < len(edge_ccs):
+                        global_mesh.nodes[self_node]['edge_id'] = n_id
+                        edge_ccs[n_id].add(self_node)
+                        info_on_pix[(self_node[0], self_node[1])][0]['edge_id'] = n_id
+                    else:
+                        # skip linking to a non-existent edge id
+                        continue
                 if global_mesh.has_edge(self_node, ne_node) is True:
                     global_mesh.remove_edge(self_node, ne_node)
                 if global_mesh.nodes[self_node].get('far') is None:
@@ -401,15 +435,23 @@ def extrapolate(global_mesh,
 
     global_fpath_map = np.zeros_like(other_edge_with_id) - 1
     global_fpath_map[all_anchor[0]:all_anchor[1], all_anchor[2]:all_anchor[3]] = fpath_map
+    # Unique fpath ids excluding -1 sentinel
     fpath_ids = np.unique(global_fpath_map)
-    fpath_ids = fpath_ids[1:] if fpath_ids.shape[0] > 0 and fpath_ids[0] == -1 else []
+    fpath_ids = fpath_ids[fpath_ids != -1]
     fpath_real_id_map = np.zeros_like(global_fpath_map) - 1
     for fpath_id in fpath_ids:
-        fpath_real_id = np.unique(((global_fpath_map == fpath_id).astype(np.int) * (other_edge_with_id + 1)) - 1)
-        fpath_real_id = fpath_real_id[1:] if fpath_real_id.shape[0] > 0 and fpath_real_id[0] == -1 else []
-        fpath_real_id = fpath_real_id.astype(np.int)
-        fpath_real_id = np.bincount(fpath_real_id).argmax()
-        fpath_real_id_map[global_fpath_map == fpath_id] = fpath_real_id
+        # Map region labels back to real edge ids; exclude -1 and guard empties
+        fpath_real_id = np.unique(((global_fpath_map == fpath_id).astype(int) * (other_edge_with_id + 1)) - 1)
+        fpath_real_id = fpath_real_id[fpath_real_id != -1]
+        if fpath_real_id.size == 0:
+            continue
+        fpath_real_id = fpath_real_id.astype(int)
+        # bincount requires non-negative ints and non-empty array
+        binc = np.bincount(fpath_real_id)
+        if binc.size == 0:
+            continue
+        fpath_real_id_val = int(binc.argmax())
+        fpath_real_id_map[global_fpath_map == fpath_id] = fpath_real_id_val
     nxs, nys = np.where((fpath_map > -1))
     for nx, ny in zip(nxs, nys):
         self_node = (nx + all_anchor[0], ny + all_anchor[2], info_on_pix[(nx + all_anchor[0], ny + all_anchor[2])][0]['depth'])
@@ -427,9 +469,10 @@ def extrapolate(global_mesh,
                     global_mesh.nodes[self_node]['near'] = []
                 if global_mesh.nodes[self_node].get('edge_id') is None:
                     f_id = int(round(fpath_real_id_map[self_node[0], self_node[1]]))
-                    global_mesh.nodes[self_node]['edge_id'] = f_id
-                    info_on_pix[(self_node[0], self_node[1])][0]['edge_id'] = f_id
-                    edge_ccs[f_id].add(self_node)
+                    if 0 <= f_id < len(edge_ccs):
+                        global_mesh.nodes[self_node]['edge_id'] = f_id
+                        info_on_pix[(self_node[0], self_node[1])][0]['edge_id'] = f_id
+                        edge_ccs[f_id].add(self_node)
                 global_mesh.nodes[self_node]['near'].append(ne_node)
 
     return info_on_pix, global_mesh, image, depth, edge_ccs

@@ -21,14 +21,35 @@ def run_depth(img_names, input_path, output_path, model_path, Net, utils, target
     """
     print("initialize")
 
-    # select device
+    # select device (prefer Apple MPS if available)
     device = torch.device("cpu")
+    try:
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
+    except Exception:
+        device = torch.device("cpu")
     print("device: %s" % device)
 
-    # load network
-    model = Net(model_path)
-    model.to(device)
-    model.eval()
+    # load network (fallback to torch.hub MiDaS if local checkpoint missing)
+    use_hub = False
+    model = None
+    try:
+        if model_path is None or (isinstance(model_path, str) and not os.path.isfile(model_path)):
+            use_hub = True
+        if not use_hub:
+            model = Net(model_path)
+            model.to(device)
+            model.eval()
+    except Exception:
+        use_hub = True
+        model = None
+    if use_hub:
+        print("Falling back to torch.hub MiDaS weights (DPT_Hybrid)")
+        midas = torch.hub.load("intel-isl/MiDaS", "DPT_Hybrid")
+        midas.to(device)
+        midas.eval()
+        midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+        dpt_transform = midas_transforms.dpt_transform
 
     # get input
     # img_names = glob.glob(os.path.join(input_path, "*"))
@@ -46,17 +67,32 @@ def run_depth(img_names, input_path, output_path, model_path, Net, utils, target
         # input
         img = utils.read_image(img_name)
         w = img.shape[1]
-        scale = 640. / max(img.shape[0], img.shape[1])
+        base_target = 640.
+        if target_w is not None:
+            try:
+                base_target = float(target_w)
+            except Exception:
+                base_target = 640.
+        scale = base_target / max(img.shape[0], img.shape[1])
         target_height, target_width = int(round(img.shape[0] * scale)), int(round(img.shape[1] * scale))
-        img_input = utils.resize_image(img)
-        print(img_input.shape)
-        img_input = img_input.to(device)
-        # compute
-        with torch.no_grad():
-            out = model.forward(img_input)
-        
-        depth = utils.resize_depth(out, target_width, target_height)
-        img = cv2.resize((img * 255).astype(np.uint8), (target_width, target_height), interpolation=cv2.INTER_AREA)
+        if use_hub:
+            input_batch = dpt_transform((img * 255).astype(np.uint8)).to(device)
+            with torch.no_grad():
+                pred = midas(input_batch)
+                pred = torch.nn.functional.interpolate(
+                    pred.unsqueeze(1), size=(target_height, target_width), mode="bicubic", align_corners=False
+                ).squeeze()
+            depth = pred.cpu().numpy().astype(np.float32)
+            img = cv2.resize((img * 255).astype(np.uint8), (target_width, target_height), interpolation=cv2.INTER_AREA)
+        else:
+            img_input = utils.resize_image(img)
+            print(img_input.shape)
+            img_input = img_input.to(device)
+            # compute
+            with torch.no_grad():
+                out = model.forward(img_input)
+            depth = utils.resize_depth(out, target_width, target_height)
+            img = cv2.resize((img * 255).astype(np.uint8), (target_width, target_height), interpolation=cv2.INTER_AREA)
 
         filename = os.path.join(
             output_path, os.path.splitext(os.path.basename(img_name))[0]

@@ -265,7 +265,7 @@ def reassign_floating_island(mesh, info_on_pix, image, depth):
     _, label_lost_map = cv2.connectedComponents(lost_map.astype(np.uint8), connectivity=4)
     mask = np.zeros((H, W))
     mask[bord_up:bord_down, bord_left:bord_right] = 1
-    label_lost_map = (label_lost_map * mask).astype(np.int)
+    label_lost_map = (label_lost_map * mask).astype(int)
 
     for i in range(1, label_lost_map.max()+1):
         lost_xs, lost_ys = np.where(label_lost_map == i)
@@ -761,7 +761,7 @@ def remove_dangling(mesh, edge_ccs, edge_mesh, info_on_pix, image, depth, config
             info_on_pix[(hx, hy)][0]['depth'] = new_depth
             info_on_pix[(hx, hy)][0]['disp'] = 1./new_depth
             new_node = (hx, hy, new_depth)
-            mesh = refresh_node(single_edge_node, mesh.node[single_edge_node], new_node, dict(), mesh)
+            mesh = refresh_node(single_edge_node, mesh.nodes[single_edge_node], new_node, dict(), mesh)
             edge_ccs[edge_cc_id] = set([new_node])
             for ne in largest_cc:
                 mesh.add_edge(new_node, ne)
@@ -2210,30 +2210,44 @@ def output_3d_photo(verts, colors, faces, Height, Width, hFov, vFov, tgt_poses, 
     if border is None:
         border = [0, img.shape[0], 0, img.shape[1]]
     H, W = cam_mesh.graph['H'], cam_mesh.graph['W']
+    # Desired output aspect ratio equals original image's ratio
     if (cam_mesh.graph['original_H'] is not None) and (cam_mesh.graph['original_W'] is not None):
-        aspect_ratio = cam_mesh.graph['original_H'] / cam_mesh.graph['original_W']
+        desired_ratio = float(cam_mesh.graph['original_H']) / float(cam_mesh.graph['original_W'])
     else:
-        aspect_ratio = cam_mesh.graph['H'] / cam_mesh.graph['W']
-    if aspect_ratio > 1:
-        img_h_len = cam_mesh.graph['H'] if cam_mesh.graph.get('original_H') is None else cam_mesh.graph['original_H']
-        img_w_len = img_h_len / aspect_ratio
-        anchor = [0,
-                  img.shape[0],
-                  int(max(0, int((img.shape[1])//2 - img_w_len//2))),
-                  int(min(int((img.shape[1])//2 + img_w_len//2), (img.shape[1])-1))]
-    elif aspect_ratio <= 1:
-        img_w_len = cam_mesh.graph['W'] if cam_mesh.graph.get('original_W') is None else cam_mesh.graph['original_W']
-        img_h_len = img_w_len * aspect_ratio
-        anchor = [int(max(0, int((img.shape[0])//2 - img_h_len//2))),
-                  int(min(int((img.shape[0])//2 + img_h_len//2), (img.shape[0])-1)),
-                  0,
-                  img.shape[1]]
-    anchor = np.array(anchor)
+        desired_ratio = float(cam_mesh.graph['H']) / float(cam_mesh.graph['W'])
     plane_width = np.tan(fov_in_rad/2.) * np.abs(mean_loc_depth)
     for video_pose, video_traj_type in zip(videos_poses, video_traj_types):
         stereos = []
         tops = []; buttoms = []; lefts = []; rights = []
-        for tp_id, tp in enumerate(video_pose):
+        # If loop requested and path is not inherently looped, mirror the path to return to start
+        loop_enabled = bool(config.get('loop_motion'))
+        expanded_pose = video_pose
+        if loop_enabled and ('circle' not in video_traj_type and 'swing' not in video_traj_type):
+            expanded_pose = list(video_pose) + list(reversed(video_pose[1:-1])) if len(video_pose) > 2 else video_pose
+
+        # Speed + duration control: build pose indices for exactly num_frames at constant fps
+        base_fps = int(config['fps'])
+        speed_mult = float(config.get('speed_multiplier', 1.0) or 1.0)
+        speed_mult = max(0.1, min(20.0, speed_mult))
+        total_poses = max(1, len(expanded_pose))
+        desired_frames = int(config.get('num_frames', total_poses))
+        # Map frame index -> pose index using speed multiplier. If looping, wrap; else clamp.
+        frame_indices = []
+        if desired_frames <= 1:
+            frame_indices = [0]
+        else:
+            for f in range(desired_frames):
+                t = f / float(desired_frames - 1)
+                pos = t * (total_poses - 1) * speed_mult
+                if loop_enabled or ('circle' in video_traj_type or 'swing' in video_traj_type):
+                    # wrap around for continuous motion
+                    if total_poses > 1:
+                        pos = pos % (total_poses - 1)
+                pos_i = int(round(np.clip(pos, 0, total_poses - 1)))
+                frame_indices.append(pos_i)
+
+        for tp_id, idx in enumerate(frame_indices):
+            tp = expanded_pose[idx]
             rel_pose = np.linalg.inv(np.dot(tp, np.linalg.inv(ref_pose)))
             axis, angle = transforms3d.axangles.mat2axangle(rel_pose[0:3, 0:3])
             normal_canvas.rotate(axis=axis, angle=(angle*180)/np.pi)
@@ -2248,8 +2262,44 @@ def output_3d_photo(verts, colors, faces, Height, Width, hFov, vFov, tgt_poses, 
             img = normal_canvas.render()
             img = cv2.GaussianBlur(img,(int(init_factor//2 * 2 + 1), int(init_factor//2 * 2 + 1)), 0)
             img = cv2.resize(img, (int(img.shape[1] / init_factor), int(img.shape[0] / init_factor)), interpolation=cv2.INTER_AREA)
-            img = img[anchor[0]:anchor[1], anchor[2]:anchor[3]]
+            # center-crop to desired aspect ratio based on current frame size
+            ih, iw = img.shape[0], img.shape[1]
+            if ih / iw > desired_ratio:
+                new_h = int(round(iw * desired_ratio))
+                top = max((ih - new_h) // 2, 0)
+                bottom = top + new_h
+                left, right = 0, iw
+            else:
+                new_w = int(round(ih / desired_ratio))
+                left = max((iw - new_w) // 2, 0)
+                right = left + new_w
+                top, bottom = 0, ih
+            img = img[top:bottom, left:right]
+            # optional additional border crop (no-op if defaults)
             img = img[int(border[0]):int(border[1]), int(border[2]):int(border[3])]
+
+            # optional pixel crop after aspect crop (robust to small frames)
+            if isinstance(config.get('pixel_crop'), dict):
+                pc = config['pixel_crop']
+                ih2, iw2 = img.shape[0], img.shape[1]
+                t = max(0, int(pc.get('top', 0)))
+                b = max(0, int(pc.get('bottom', 0)))
+                l = max(0, int(pc.get('left', 0)))
+                r = max(0, int(pc.get('right', 0)))
+                # ensure at least 2px remain after crop; scale down requested crop if needed
+                if t + b >= ih2 - 2:
+                    scale = (ih2 - 2) / float(max(1, t + b))
+                    t = int(round(t * scale))
+                    b = int(round(b * scale))
+                if l + r >= iw2 - 2:
+                    scale = (iw2 - 2) / float(max(1, l + r))
+                    l = int(round(l * scale))
+                    r = int(round(r * scale))
+                top_i = min(max(0, t), ih2 - 2)
+                bottom_i = max(min(ih2 - max(0, b), ih2), top_i + 2)
+                left_i = min(max(0, l), iw2 - 2)
+                right_i = max(min(iw2 - max(0, r), iw2), left_i + 2)
+                img = img[top_i:bottom_i, left_i:right_i]
 
             if any(np.array(config['crop_border']) > 0.0):
                 H_c, W_c, _ = img.shape
@@ -2281,15 +2331,29 @@ def output_3d_photo(verts, colors, faces, Height, Width, hFov, vFov, tgt_poses, 
         else:
             atop = 0; abuttom = img.shape[0] - img.shape[0] % 2; aleft = 0; aright = img.shape[1] - img.shape[1] % 2
         """
-        atop = 0; abuttom = img.shape[0] - img.shape[0] % 2; aleft = 0; aright = img.shape[1] - img.shape[1] % 2
+        # Ensure all frames have identical size before writing
+        # Compute minimum H/W across frames and center-crop to that size (even dims)
+        if len(stereos) == 0:
+            continue
+        min_h = min(s.shape[0] for s in stereos)
+        min_w = min(s.shape[1] for s in stereos)
+        # make even for codecs
+        min_h -= (min_h % 2)
+        min_w -= (min_w % 2)
         crop_stereos = []
         for stereo in stereos:
-            crop_stereos.append((stereo[atop:abuttom, aleft:aright, :3] * 1).astype(np.uint8))
-            stereos = crop_stereos
-        clip = ImageSequenceClip(stereos, fps=config['fps'])
+            h, w = stereo.shape[0], stereo.shape[1]
+            top_c = max((h - min_h) // 2, 0)
+            left_c = max((w - min_w) // 2, 0)
+            crop = stereo[top_c:top_c+min_h, left_c:left_c+min_w, :3]
+            crop_stereos.append(crop.astype(np.uint8))
+        stereos = crop_stereos
+        # Write with constant fps (30); camera speed handled in index mapping above
+        eff_fps = int(config['fps'])
+        clip = ImageSequenceClip(stereos, fps=eff_fps)
         if isinstance(video_basename, list):
             video_basename = video_basename[0]
-        clip.write_videofile(os.path.join(output_dir, video_basename + '_' + video_traj_type + '.mp4'), fps=config['fps'])
+        clip.write_videofile(os.path.join(output_dir, video_basename + '_' + video_traj_type + '.mp4'), fps=eff_fps)
 
 
 
