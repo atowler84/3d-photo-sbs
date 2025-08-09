@@ -9,6 +9,21 @@ Includes a simple **Web UI** and minimal **HTTP API**.
 
 ---
 
+## 📸 Dashboard Preview
+![Dashboard Preview 1](https://i.imgur.com/gPD9xPl.png)  
+![Dashboard Preview 2](https://i.imgur.com/r0UV95s.png)
+
+---
+
+## 🎞 Example Results
+| Example 1 | Example 2 |
+|-----------|-----------|
+| ![GIF 1](https://i.imgur.com/ISHpkfx.gif) | ![GIF 2](https://i.imgur.com/QZo1hbZ.gif) |
+| Example 3 | Example 4 |
+| ![GIF 3](https://i.imgur.com/UiWR2lR.gif) | ![GIF 4](https://i.imgur.com/1EKZuYq.gif) |
+
+---
+
 ## ✨ Features
 - 🖤 Depth via **Depth-Anything v2** (Small / Base / Large)
 - ⚡ Fast, no-upscale pipeline with optional **Fast Mode**
