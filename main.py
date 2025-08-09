@@ -2,6 +2,7 @@ import numpy as np
 import argparse
 import glob
 import os
+import re
 from functools import partial
 import vispy
 import scipy.misc as misc
@@ -17,11 +18,12 @@ from skimage.transform import resize
 import imageio
 import copy
 from networks import Inpaint_Color_Net, Inpaint_Depth_Net, Inpaint_Edge_Net
-from MiDaS.run import run_depth
 from DA2_depth import run_depth_anything_v2
-from boostmonodepth_utils import run_boostmonodepth
-from MiDaS.monodepth_net import MonoDepthNet
-import MiDaS.MiDaS_utils as MiDaS_utils
+"""
+Note on optional depth backends:
+- MiDaS and BoostMonoDepth are optional and imported lazily only when enabled in config.
+- This allows removing the `MiDaS/` directory when not used.
+"""
 from bilateral_filtering import sparse_bilateral_filtering
 
 parser = argparse.ArgumentParser()
@@ -146,6 +148,10 @@ else:
 
 print(f"running on device {device}")
 
+# helper to create filesystem-safe names for debug assets
+def _safe_name(x: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(x))
+
 for idx in tqdm(range(len(sample_list))):
     write_progress(1, 'Starting')
     depth = None
@@ -157,19 +163,62 @@ for idx in tqdm(range(len(sample_list))):
     print(f"Running depth extraction at {time.time()}")
     if config.get('use_depth_anything_v2', False):
         run_depth_anything_v2([sample['ref_img_fi']], config['depth_folder'], encoder=config.get('depth_anything_encoder', 'vits'), input_size=518)
-    elif config['use_boostmonodepth'] is True:
+    elif config.get('use_boostmonodepth') is True:
+        # Lazy import to avoid importing optional deps when not needed
+        from boostmonodepth_utils import run_boostmonodepth
         run_boostmonodepth(sample['ref_img_fi'], config['src_folder'], config['depth_folder'])
-    elif config['require_midas'] is True:
+    elif config.get('require_midas') is True:
+        # Lazy import MiDaS only if required
+        from MiDaS.run import run_depth
+        from MiDaS.monodepth_net import MonoDepthNet
+        import MiDaS.MiDaS_utils as MiDaS_utils
         run_depth([sample['ref_img_fi']], config['src_folder'], config['depth_folder'],
                   config['MiDaS_model_ckpt'], MonoDepthNet, MiDaS_utils, target_w=448)
     write_progress(15, 'Depth estimated')
+    # As soon as depth is estimated, export the raw depth from depth/ as a PNG for live preview
+    if DEBUG_MODE and DEBUG_DIR:
+        try:
+            os.makedirs(DEBUG_DIR, exist_ok=True)
+            raw_path = sample.get('depth_fi')
+            base_dbg = _safe_name(sample.get('src_pair_name') or sample.get('tgt_name') or 'input')
+            if isinstance(raw_path, str) and os.path.exists(raw_path):
+                if raw_path.lower().endswith('.npy'):
+                    d_raw = np.load(raw_path)
+                else:
+                    d_raw = imageio.imread(raw_path)
+                if d_raw is not None:
+                    dmin, dmax = float(np.min(d_raw)), float(np.max(d_raw))
+                    dn = (d_raw - dmin) / max(1e-6, (dmax - dmin))
+                    dn = (dn * 255.0).astype(np.uint8)
+                    # Downscale-only to requested processing size for live preview
+                    try:
+                        req_long = int(config.get('longer_side_len', max(dn.shape[:2])))
+                        cur_long = max(dn.shape[0], dn.shape[1])
+                        eff_long = min(req_long, cur_long)
+                        frac_dbg = float(eff_long) / float(cur_long) if cur_long > 0 else 1.0
+                        if frac_dbg < 1.0:
+                            tgt_h = max(1, int(dn.shape[0] * frac_dbg))
+                            tgt_w = max(1, int(dn.shape[1] * frac_dbg))
+                            dn = cv2.resize(dn, (tgt_w, tgt_h), interpolation=cv2.INTER_AREA)
+                    except Exception:
+                        pass
+                    cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_dbg}_depth_raw.png"), dn)
+        except Exception:
+            pass
 
     if 'npy' in config['depth_format']:
         config['output_h'], config['output_w'] = np.load(sample['depth_fi']).shape[:2]
     else:
         config['output_h'], config['output_w'] = imageio.imread(sample['depth_fi']).shape[:2]
-    frac = config['longer_side_len'] / max(config['output_h'], config['output_w'])
-    config['output_h'], config['output_w'] = int(config['output_h'] * frac), int(config['output_w'] * frac)
+    # Strictly no upscaling: cap to image longer side and also cap to requested limit, whichever is smaller
+    requested_longer = int(config.get('longer_side_len', max(config['output_h'], config['output_w'])))
+    current_longer = max(config['output_h'], config['output_w'])
+    effective_longer = min(requested_longer, current_longer)
+    frac = float(effective_longer) / float(current_longer) if current_longer > 0 else 1.0
+    # Ensure even dimensions early to avoid later resizes in video writer
+    new_h = int(config['output_h'] * frac); new_w = int(config['output_w'] * frac)
+    new_h -= (new_h % 2); new_w -= (new_w % 2)
+    config['output_h'], config['output_w'] = max(2, new_h), max(2, new_w)
     config['original_h'], config['original_w'] = config['output_h'], config['output_w']
     if image.ndim == 2:
         image = image[..., None].repeat(3, -1)
@@ -182,11 +231,12 @@ for idx in tqdm(range(len(sample_list))):
     if DEBUG_MODE and DEBUG_DIR:
         try:
             os.makedirs(DEBUG_DIR, exist_ok=True)
-            # Save resized input image used downstream
-            cv2.imwrite(os.path.join(DEBUG_DIR, f"{sample['tgt_name']}_image.png"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+            # Save resized input image used downstream (already no-upscale processed size)
+            base_dbg = _safe_name(sample.get('tgt_name') or sample.get('src_pair_name') or 'input')
+            cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_dbg}_image.png"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
             # Save raw depth (pre-filter) quick preview
             d0 = (depth - depth.min()) / max(1e-6, (depth.max() - depth.min()))
-            cv2.imwrite(os.path.join(DEBUG_DIR, f"{sample['tgt_name']}_depth_pre.png"), (d0*255).astype(np.uint8))
+            cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_dbg}_depth_pre.png"), (d0*255).astype(np.uint8))
         except Exception:
             pass
     mean_loc_depth = depth[depth.shape[0]//2, depth.shape[1]//2]
@@ -198,7 +248,13 @@ for idx in tqdm(range(len(sample_list))):
             try:
                 # Save depth after filtering—the one actually used by the pipeline
                 d1 = (depth - depth.min()) / max(1e-6, (depth.max() - depth.min()))
-                cv2.imwrite(os.path.join(DEBUG_DIR, f"{sample['tgt_name']}_depth_post.png"), (d1*255).astype(np.uint8))
+                base_dbg = _safe_name(sample.get('tgt_name') or sample.get('src_pair_name') or 'input')
+                # ensure debug image is saved at the current output resolution the user selected
+                dbg_h, dbg_w = int(config['output_h']), int(config['output_w'])
+                d1_img = (d1*255).astype(np.uint8)
+                if d1_img.shape[0] != dbg_h or d1_img.shape[1] != dbg_w:
+                    d1_img = cv2.resize(d1_img, (dbg_w, dbg_h), interpolation=cv2.INTER_NEAREST)
+                cv2.imwrite(os.path.join(DEBUG_DIR, f"{base_dbg}_depth_post.png"), d1_img)
             except Exception:
                 pass
         model = None

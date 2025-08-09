@@ -30,8 +30,12 @@ def ensure_weights(config_path: str) -> None:
         "depth_feat_model_ckpt": cfg["depth_feat_model_ckpt"],
         "rgb_feat_model_ckpt": cfg["rgb_feat_model_ckpt"],
     }
-    midas_path = cfg.get("MiDaS_model_ckpt", "MiDaS/model.pt")
-    for path in list(checkpoints.values()) + [midas_path]:
+    # Only prepare MiDaS checkpoint if explicitly required
+    paths = list(checkpoints.values())
+    if cfg.get("require_midas") is True:
+        midas_path = cfg.get("MiDaS_model_ckpt", "MiDaS/model.pt")
+        paths.append(midas_path)
+    for path in paths:
         full = path if os.path.isabs(path) else os.path.join(PROJECT_ROOT, path)
         os.makedirs(os.path.dirname(full), exist_ok=True)
 
@@ -80,7 +84,10 @@ def _run_job(
     env["SRC_FOLDER"] = image_dir
     env["DEPTH_FOLDER"] = depth_dir
     env["MESH_FOLDER"] = mesh_dir
-    env["VIDEO_FOLDER"] = video_dir
+    # Stage videos into a per-job temp dir; copy to static only after success
+    staged_video_dir = os.path.join(video_dir, work_id)
+    os.makedirs(staged_video_dir, exist_ok=True)
+    env["VIDEO_FOLDER"] = staged_video_dir
     if encoder:
         env["DEPTH_ANYTHING_ENCODER"] = encoder
     if fast:
@@ -93,13 +100,12 @@ def _run_job(
         env["LOOP_MODE"] = "1"
     if speed is not None:
         env["SPEED_MULTIPLIER"] = str(speed)
-    if debug:
-        env["DEBUG_MODE"] = "1"
-        # write debug files into a per-job subdir for easy discovery
-        debug_subdir = os.path.join(static_dir, f"dbg_{work_id}")
-        os.makedirs(debug_subdir, exist_ok=True)
-        env["DEBUG_DIR"] = debug_subdir
-        env["WORK_ID"] = work_id
+    # Always enable debug directory so we can stream intermediate assets in UI
+    env["DEBUG_MODE"] = "1"
+    debug_subdir = os.path.join(static_dir, f"dbg_{work_id}")
+    os.makedirs(debug_subdir, exist_ok=True)
+    env["DEBUG_DIR"] = debug_subdir
+    env["WORK_ID"] = work_id
     # crop px borders (applied after aspect crop)
     if crop_top_px is not None:
         env["CROP_TOP_PX"] = str(max(0, int(crop_top_px)))
@@ -122,17 +128,22 @@ def _run_job(
     # Prepare result if success
     if proc.returncode == 0:
         videos = []
-        if os.path.isdir(video_dir):
-            for f in os.listdir(video_dir):
-                if f.startswith(out_key):
-                    src = os.path.join(video_dir, f)
+        # copy staged videos into static/ now that generation finished
+        if os.path.isdir(staged_video_dir):
+            for f in os.listdir(staged_video_dir):
+                if f.startswith(out_key) and f.lower().endswith((".mp4", ".webm", ".mov")):
+                    src = os.path.join(staged_video_dir, f)
                     dst = os.path.join(static_dir, f)
-                    if not os.path.exists(dst):
-                        try:
-                            os.link(src, dst)
-                        except Exception:
+                    try:
+                        if not os.path.exists(dst):
                             with open(src, "rb") as rf, open(dst, "wb") as wf:
                                 wf.write(rf.read())
+                    except Exception:
+                        pass
+        # collect videos from static after copy
+        if os.path.isdir(static_dir):
+            for f in os.listdir(static_dir):
+                if f.startswith(out_key) and f.lower().endswith((".mp4", ".webm", ".mov")):
                     videos.append(f"/static/{f}")
         debug_assets = []
         # collect debug files if any
@@ -228,7 +239,17 @@ def progress(job_id: str):
                 message = data.get('message', message)
         except Exception:
             pass
-    return {"done": jobs[job_id]["done"], "percent": percent, "message": message}
+    # stream any debug assets produced so far
+    debug_assets = []
+    dbg_dir = os.path.join(static_dir, f"dbg_{job_id}")
+    try:
+        if os.path.isdir(dbg_dir):
+            for f in sorted(os.listdir(dbg_dir)):
+                if f.lower().endswith((".png", ".jpg", ".jpeg")):
+                    debug_assets.append(f"/static/dbg_{job_id}/{f}")
+    except Exception:
+        pass
+    return {"done": jobs[job_id]["done"], "percent": percent, "message": message, "debug_assets": debug_assets}
 
 
 @app.get("/api/result/{job_id}")

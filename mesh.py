@@ -1826,8 +1826,14 @@ def write_ply(image,
               depth_edge_model,
               depth_edge_model_init,
               depth_feat_model):
-    depth = depth.astype(np.float64)
+    # Use float32 to reduce memory and improve speed without impacting quality
+    # Keep this function lightweight to avoid slowdown; only used by outer script
+    def _write_progress(percent: int, message: str) -> None:
+        return
+
+    depth = depth.astype(np.float32)
     input_mesh, xy2depth, image, depth = create_mesh(depth, image, int_mtx, config)
+    # intentionally no per-step writes here to avoid overhead
 
     H, W = input_mesh.graph['H'], input_mesh.graph['W']
     input_mesh = tear_edges(input_mesh, config['depth_threshold'], xy2depth)
@@ -2348,6 +2354,25 @@ def output_3d_photo(verts, colors, faces, Height, Width, hFov, vFov, tgt_poses, 
             crop = stereo[top_c:top_c+min_h, left_c:left_c+min_w, :3]
             crop_stereos.append(crop.astype(np.uint8))
         stereos = crop_stereos
+        # Optionally resize frames to the exact user-selected processing resolution
+        try:
+            target_h = int(config.get('output_h', min_h))
+            target_w = int(config.get('output_w', min_w))
+            target_h -= (target_h % 2)
+            target_w -= (target_w % 2)
+            # Downscale only: never upscale frames beyond their current size
+            cur_h, cur_w = stereos[0].shape[0], stereos[0].shape[1]
+            if target_h > 0 and target_w > 0 and (cur_h != target_h or cur_w != target_w):
+                resized = []
+                for s in stereos:
+                    # Only shrink; if requested target is larger, keep original
+                    if target_w <= s.shape[1] and target_h <= s.shape[0]:
+                        resized.append(cv2.resize(s, (target_w, target_h), interpolation=cv2.INTER_AREA))
+                    else:
+                        resized.append(s)
+                stereos = resized
+        except Exception:
+            pass
         # Write with constant fps (30); camera speed handled in index mapping above
         eff_fps = int(config['fps'])
         clip = ImageSequenceClip(stereos, fps=eff_fps)

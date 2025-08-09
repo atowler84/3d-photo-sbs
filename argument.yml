@@ -23,28 +23,29 @@ gpu_ids: 0
 offscreen_rendering: False
 img_format: '.jpg'
 depth_format: '.npy'
-require_midas: True
+require_midas: False
 use_depth_anything_v2: True
 depth_anything_encoder: vits
 depth_threshold: 0.04
 ext_edge_threshold: 0.002
-sparse_iter: 3
+## performance-friendly defaults (less memory/time)
+sparse_iter: 2
 filter_size: [7, 7, 5, 5, 5]
 sigma_s: 4.0
 sigma_r: 0.5
-redundant_number: 12
-background_thickness: 70
-context_thickness: 140
+redundant_number: 8
+background_thickness: 50
+context_thickness: 100
 background_thickness_2: 70
 context_thickness_2: 70
 discount_factor: 1.00
 log_depth: True
-largest_size: 512
+largest_size: 384
 depth_edge_dilate: 10
 depth_edge_dilate_2: 5
 extrapolate_border: False
-extrapolation_thickness: 60
-repeat_inpaint_edge: True
+extrapolation_thickness: 30
+repeat_inpaint_edge: False
 crop_border: [0.0, 0.0, 0.0, 0.0]
 anti_flickering: False
 edge_refine: False

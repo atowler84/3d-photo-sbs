@@ -1,0 +1,276 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Spatial-Photo</title>
+    <style>
+      :root { --bg:#0b0b0d; --fg:#e6e6eb; --muted:#8c8c94; --card:#141416; --accent:#0a84ff; --accent2:#7c4dff; --border:#242428; }
+      * { box-sizing: border-box; }
+      body { margin:0; background:var(--bg); color:var(--fg); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      header { position:sticky; top:0; backdrop-filter: blur(10px); background:linear-gradient(90deg, rgba(10,132,255,0.12), rgba(124,77,255,0.12)); border-bottom:1px solid var(--border); padding:12px 20px; }
+      h1 { font-size:17px; font-weight:700; margin:0; letter-spacing: 0.3px; display:flex; align-items:center; gap:12px; }
+      .logo { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:9px; background:linear-gradient(135deg, var(--accent), var(--accent2)); box-shadow: 0 6px 16px rgba(10,132,255,0.35) inset, 0 3px 10px rgba(0,0,0,0.4); font-weight:800; }
+      .tagline { font-size:12px; color:var(--muted); font-weight:600; margin-left:auto; }
+      main { max-width:1200px; margin:36px auto; padding:0 24px; }
+      .panel { background:linear-gradient(180deg, #141416, #0f0f12); border:1px solid var(--border); border-radius:18px; padding:24px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+      .layout { display:grid; grid-template-columns: 320px 1fr; gap:24px; align-items:start; }
+      .sidebar { position: sticky; top: 20px; align-self: start; }
+      .content { min-height: 240px; }
+      .controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+      .controls.vertical { flex-direction: column; align-items: stretch; }
+      .btn { -webkit-appearance:none; appearance:none; border:1px solid var(--border); background: linear-gradient(180deg,#1c1c1f,#121214); color:var(--fg); padding:10px 14px; border-radius:12px; cursor:pointer; font-weight:700; transition: transform .08s ease, box-shadow .2s ease; }
+      .btn.primary { background: linear-gradient(180deg,#0a84ff,#0066cc); border-color:#0a84ff; }
+      .btn.ghost { background:transparent; color:var(--muted); }
+      .btn:hover { box-shadow: 0 6px 16px rgba(10,132,255,0.25); }
+      .btn:active { transform: translateY(1px); }
+      .btn:disabled { opacity:0.6; cursor:not-allowed; }
+      .drop { border:1.5px dashed var(--border); border-radius:16px; padding:24px; text-align:center; color:var(--muted); }
+      .tag { color:var(--muted); font-size:12px; }
+      select, input[type="number"], input[type="text"] { background:#0e0e11; color:var(--fg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+      .controls.vertical select, .controls.vertical input { width: 100%; }
+      /* Range slider */
+      input[type="range"] { -webkit-appearance:none; appearance:none; width:100%; height:4px; background:#1b1b1e; border-radius:999px; outline:none; border:1px solid var(--border); }
+      input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none; width:18px; height:18px; border-radius:50%; background:linear-gradient(90deg, var(--accent), var(--accent2)); border:0; box-shadow:0 0 0 3px rgba(10,132,255,0.25); cursor:pointer; }
+      input[type="range"]::-moz-range-thumb { width:18px; height:18px; border-radius:50%; background:linear-gradient(90deg, var(--accent), var(--accent2)); border:0; box-shadow:0 0 0 3px rgba(10,132,255,0.25); cursor:pointer; }
+      video { width:100%; border-radius:14px; border:1px solid var(--border); background:#000; }
+      progress { width: 100%; height: 12px; accent-color: var(--accent); border-radius:999px; overflow:hidden; background:#0e0e11; border:1px solid var(--border); }
+      /* Switch (iOS-like) */
+      .switch { position:relative; display:inline-block; width:46px; height:26px; vertical-align:middle; }
+      .switch input { display:none; }
+      .slider { position:absolute; cursor:pointer; inset:0; background:#1b1b1e; border:1px solid var(--border); transition:.2s; border-radius:999px; }
+      .slider:before { content:""; position:absolute; height:20px; width:20px; left:3px; top:2px; background:linear-gradient(180deg,#2a2a2f,#18181b); border:1px solid #2a2a2f; transition:.2s; border-radius:50%; }
+      .switch input:checked + .slider { background: linear-gradient(90deg, var(--accent), var(--accent2)); border-color: transparent; }
+      .switch input:checked + .slider:before { transform: translateX(20px); background:#fff; }
+      .stack { display:flex; gap:8px; align-items:center; }
+      .field { display:flex; flex-direction:column; gap:4px; }
+      .field label { font-size:11px; color:var(--muted); font-weight:600; }
+      .preview { margin-top:10px; display:none; }
+      .preview img { width:100%; border-radius:12px; border:1px solid var(--border); }
+      .video-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+      .thumb { position:relative; }
+      .thumb .cap { position:absolute; left:8px; bottom:8px; font-size:12px; background:rgba(0,0,0,0.5); padding:4px 8px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); }
+      /* Fun, interactive touches */
+      body { background: radial-gradient(1000px 600px at 15% -10%, rgba(10,132,255,0.14), transparent), var(--bg); }
+      header { background: linear-gradient(90deg, rgba(10,132,255,0.12), rgba(124,77,255,0.12)); }
+      .btn { transition: transform .08s ease, box-shadow .2s ease; font-weight:700; }
+      .btn:hover { box-shadow: 0 6px 16px rgba(10,132,255,0.25); }
+      .btn:active { transform: translateY(1px); }
+      .drop.drag { border-color: var(--accent); background: rgba(10,132,255,0.06); }
+      .preview { margin-top:10px; display:none; }
+      .preview img { width:100%; border-radius:12px; border:1px solid var(--border); }
+      .video-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+      .thumb { position:relative; }
+      .thumb .cap { position:absolute; left:8px; bottom:8px; font-size:12px; background:rgba(0,0,0,0.5); padding:4px 8px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); }
+      @media (max-width: 1000px) {
+        .layout { grid-template-columns: 1fr; }
+        .sidebar { position: static; }
+        .video-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header><h1><span class="logo">⌁</span> Spatial‑Photo <span class="tagline">Depth to motion, in seconds</span></h1></header>
+    <main>
+      <div class="panel">
+        <div class="layout">
+          <aside class="sidebar">
+            <div id="drop" class="drop">
+              <div style="font-weight:700">Drop an image</div>
+              <div class="tag" style="margin-top:2px">or choose a file to start</div>
+              <div style="margin-top:10px"><input id="file" type="file" accept="image/*" /></div>
+            </div>
+            <div id="preview" class="preview"><img id="previewImg" alt="preview" /></div>
+            <div style="margin-top:12px" class="controls vertical">
+              <button id="btn" class="btn primary">Generate</button>
+              <button id="clear" class="btn ghost">Clear</button>
+              <div class="field"><label>Encoder</label>
+                <select id="encoder">
+                  <option value="vits" selected>Small (fast)</option>
+                  <option value="vitb">Base</option>
+                  <option value="vitl">Large (best)</option>
+                </select>
+              </div>
+              <div class="field"><label>Resolution</label>
+                <select id="res">
+                  <option value="640">640</option>
+                  <option value="768" selected>768</option>
+                  <option value="1024">1024</option>
+                  <option value="1280">1280</option>
+                  <option value="1536">1536</option>
+                </select>
+              </div>
+              <label class="tag stack"><span>Fast Mode</span><label class="switch"><input type="checkbox" id="fast" /><span class="slider"></span></label></label>
+              <label class="tag stack"><span>Debug</span><label class="switch"><input type="checkbox" id="debug" /><span class="slider"></span></label></label>
+              <div class="field"><label>Speed <span id="speedVal" class="tag"></span></label>
+                <input type="range" id="speed" min="0.25" max="20" step="0.25" value="1" />
+              </div>
+              <div class="field"><label>Duration (s) <span id="durationVal" class="tag"></span></label>
+                <input type="range" id="duration" min="1" max="15" step="1" value="5" />
+              </div>
+              <label class="tag stack"><span>Loop</span><label class="switch"><input type="checkbox" id="loop" /><span class="slider"></span></label></label>
+            </div>
+          </aside>
+          <section class="content">
+            <div style="margin-bottom:12px"><progress id="bar" value="0" max="100" hidden></progress></div>
+            <div id="status" class="tag" style="margin-bottom:12px"></div>
+            <div id="liveDbg" class="video-grid" style="margin-bottom:12px"></div>
+            <div id="out"></div>
+          </section>
+        </div>
+      </div>
+    </main>
+    <script>
+      const $ = (s) => document.querySelector(s);
+      const settingsKey = 'spatialPhoto.settings.v1';
+      function loadSettings(){ try { return JSON.parse(localStorage.getItem(settingsKey)||'{}'); } catch { return {}; } }
+      function saveSettings(s){ try { localStorage.setItem(settingsKey, JSON.stringify(s)); } catch {}
+      }
+      function applySettings(){
+        const s = loadSettings();
+        if (s.encoder) $('#encoder').value = s.encoder;
+        if (s.res) $('#res').value = s.res;
+        if (typeof s.fast === 'boolean') $('#fast').checked = s.fast;
+        if (typeof s.debug === 'boolean') $('#debug').checked = s.debug;
+        if (s.speed) $('#speed').value = s.speed;
+        if (s.duration) $('#duration').value = s.duration;
+        // update labels
+        $('#speedVal').textContent = `${$('#speed').value}x`;
+        $('#durationVal').textContent = `${$('#duration').value}s`;
+        if (typeof s.loop === 'boolean') $('#loop').checked = s.loop;
+      }
+      function captureSettings(){
+        const s = loadSettings();
+        s.encoder = $('#encoder').value;
+        s.res = $('#res').value;
+        s.fast = $('#fast').checked;
+        s.debug = $('#debug').checked;
+        s.speed = $('#speed').value;
+        s.duration = $('#duration').value;
+        s.loop = $('#loop').checked;
+        saveSettings(s);
+      }
+      applySettings();
+      ['encoder','res','speed','duration','fast','debug','loop'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.addEventListener('change', captureSettings);
+      });
+
+      // live slider labels
+      $('#speed').addEventListener('input', () => { $('#speedVal').textContent = `${$('#speed').value}x`; });
+      $('#duration').addEventListener('input', () => { $('#durationVal').textContent = `${$('#duration').value}s`; });
+
+      const drop = $('#drop');
+      drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
+      drop.addEventListener('dragleave', e => { e.preventDefault(); drop.classList.remove('drag'); });
+      drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); if (e.dataTransfer.files[0]) $('#file').files = e.dataTransfer.files; });
+      const fileInput = $('#file');
+      fileInput.addEventListener('change', () => {
+        const f = fileInput.files[0];
+        if (!f) { $('#preview').style.display='none'; return; }
+        const url = URL.createObjectURL(f);
+        $('#previewImg').src = url;
+        $('#preview').style.display = 'block';
+      });
+
+      $('#btn').onclick = async () => {
+        const f = $('#file').files[0];
+        if (!f) { $('#status').textContent = 'Please choose an image.'; return; }
+        $('#status').textContent = 'Uploading and generating...';
+        const bar = $('#bar');
+        bar.hidden = false; bar.value = 0;
+        // reset live debug panel at start
+        const livePanel = $('#liveDbg');
+        if (livePanel) { livePanel.innerHTML = ''; livePanel.style.display = 'none'; }
+        const wasDebug = $('#debug').checked;
+        const fd = new FormData();
+        fd.append('image', f);
+        fd.append('encoder', $('#encoder').value);
+        if ($('#res').value) fd.append('longer_side', $('#res').value);
+        fd.append('fast', $('#fast').checked ? '1' : '');
+        if ($('#duration').value) fd.append('duration', $('#duration').value);
+        if ($('#loop').checked) fd.append('loop', '1');
+        if ($('#speed').value) fd.append('speed', $('#speed').value);
+        if ($('#debug').checked) fd.append('debug', '1');
+        try {
+          captureSettings();
+          const res = await fetch('/api/generate', { method: 'POST', body: fd });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Failed');
+          const jobId = data.job_id;
+          const key = data.key;
+          $('#status').textContent = 'Processing...';
+          // poll progress
+          let lastPct = -1;
+          let lastMsg = '';
+          let lastChangeTs = Date.now();
+          const poll = setInterval(async () => {
+            const r = await fetch(`/api/progress/${jobId}`);
+            const p = await r.json();
+            if (p.percent != null) bar.value = p.percent;
+            // liveness hint if percent/message unchanged for a while
+            const msg = p.message || '';
+            const changed = (bar.value !== lastPct) || (msg !== lastMsg);
+            if (changed) { lastPct = bar.value; lastMsg = msg; lastChangeTs = Date.now(); }
+            let statusText = msg + ` (${bar.value}%)`;
+            const stagnateMs = Date.now() - lastChangeTs;
+            if (!p.done && stagnateMs > 45000) {
+              statusText += ' – still working… (mesh step can take a few minutes)';
+            }
+            $('#status').textContent = statusText;
+            // live previews: always show depth images; show all debug assets only if Debug was enabled
+            if (Array.isArray(p.debug_assets)) {
+              const live = $('#liveDbg');
+              const isDepth = (u) => /depth/i.test(u);
+              const toShow = wasDebug ? p.debug_assets : p.debug_assets.filter(isDepth);
+              live.innerHTML = '';
+              toShow.forEach(u => {
+                const img = document.createElement('img');
+                img.src = u; img.style.width='100%'; img.style.border='1px solid var(--border)'; img.style.borderRadius='10px';
+                live.appendChild(img);
+              });
+              // show panel only while processing
+              live.style.display = toShow.length ? 'grid' : 'none';
+            }
+            if (p.done) {
+              clearInterval(poll);
+              // hide any live depth/debug previews after job completion
+              const live = $('#liveDbg'); if (live) { live.innerHTML = ''; live.style.display = 'none'; }
+              const rr = await fetch(`/api/result/${jobId}`);
+              const resData = await rr.json();
+              if (!rr.ok) { $('#status').textContent = 'Error: ' + (resData.error || 'failed'); bar.hidden = true; return; }
+              $('#status').textContent = 'Done!';
+              bar.hidden = true;
+              const out = $('#out');
+              out.innerHTML = '';
+              if (resData.videos && resData.videos.length) {
+                const grid = document.createElement('div'); grid.className = 'video-grid'; out.appendChild(grid);
+                resData.videos.forEach(v => {
+                  const wrap = document.createElement('div'); wrap.className='thumb';
+                  const el = document.createElement('video'); el.controls = true; el.src = v; wrap.appendChild(el);
+                  const cap = document.createElement('div'); cap.className='cap'; cap.textContent = v.split('_').slice(-1)[0].replace('.mp4',''); wrap.appendChild(cap);
+                  grid.appendChild(wrap);
+                });
+              }
+              if (wasDebug && resData.debug_assets && resData.debug_assets.length) {
+                const h = document.createElement('div'); h.className = 'tag'; h.textContent = 'Debug outputs'; out.appendChild(h);
+                const grid = document.createElement('div'); grid.style.display='grid'; grid.style.gridTemplateColumns='repeat(3, 1fr)'; grid.style.gap='8px'; out.appendChild(grid);
+                resData.debug_assets.forEach(u => {
+                  const img = document.createElement('img'); img.src = u; img.style.width='100%'; img.style.border='1px solid var(--border)'; img.style.borderRadius='10px';
+                  grid.appendChild(img);
+                });
+              }
+            }
+          }, 1200);
+        } catch (e) {
+          $('#status').textContent = 'Error: ' + e.message;
+          $('#bar').hidden = true;
+          const live = $('#liveDbg'); if (live) { live.innerHTML = ''; live.style.display = 'none'; }
+        }
+      };
+      // Clear outputs
+      $('#clear').onclick = () => { $('#out').innerHTML = ''; $('#status').textContent=''; const live = $('#liveDbg'); if (live) { live.innerHTML=''; live.style.display='none'; } };
+    </script>
+  </body>
+  </html>
+
+

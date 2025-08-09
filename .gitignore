@@ -1,11 +1,4 @@
-#ignore all kind of files
-*.*
-#except php files
-!*.py
-!*.yml
-!*.txt
-!*.md
-!*LICENSE
+
 !image/moon.jpg
 !depth/moon.npy
 !depth/moon.png
@@ -16,3 +9,10 @@
 !video/moon.mp4
 !video/moon_circle.mp4
 !misc/moon_40.gif
+.progress_0af60a6b.json
+*.json
+*.jpg
+*.png
+*.mp4
+*.npy
+*.pyc
