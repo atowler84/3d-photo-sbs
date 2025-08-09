@@ -27,6 +27,7 @@ Includes a simple **Web UI** and minimal **HTTP API**.
   - `edge-model.pth`
   - `depth-model.pth`
   - `color-model.pth`
+  - 📥 [Download all from Hugging Face](https://huggingface.co/spaces/Epoching/3D_Photo_Inpainting/tree/6cd94e54b5c496a33fae12b4ac586b8c31943873/checkpoints)
 
 ### Install & Run
 ```bash
@@ -112,9 +113,7 @@ Response:
 | Videos              | `video/` → served via `/static` |
 | Mesh cache          | `mesh/`                         |
 | Debug previews      | `static/dbg_<jobid>/`           |
-| checkpoints         | <a href="https://huggingface.co/spaces/Epoching/3D_Photo_Inpainting/tree/6cd94e54b5c496a33fae12b4ac586b8c31943873/checkpoints
-">download here </a>                   |
-
+| Model checkpoints   | `checkpoints/` → [Download here](https://huggingface.co/spaces/Epoching/3D_Photo_Inpainting/tree/6cd94e54b5c496a33fae12b4ac586b8c31943873/checkpoints) |
 
 ---
 
@@ -135,7 +134,7 @@ Main config: `argument.yml`
 ## 🛠 Troubleshooting
 - **Stuck at “Building mesh”** → This step is heaviest; use **Fast Mode** and/or lower **Resolution**  
 - **Artifacts / memory spikes** → Lower `longer_side_len` in `argument.yml`, or reduce `sparse_iter` / `largest_size`  
-- **Missing models** → Ensure all checkpoints exist in `checkpoints/`
+- **Missing models** → Ensure all checkpoints exist in `checkpoints/` (see download link above)
 
 ---
 
