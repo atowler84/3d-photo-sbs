@@ -112,6 +112,9 @@ Response:
 | Videos              | `video/` → served via `/static` |
 | Mesh cache          | `mesh/`                         |
 | Debug previews      | `static/dbg_<jobid>/`           |
+| checkpoints         | <a href="https://huggingface.co/spaces/Epoching/3D_Photo_Inpainting/tree/6cd94e54b5c496a33fae12b4ac586b8c31943873/checkpoints
+">download here </a>                   |
+
 
 ---
 
