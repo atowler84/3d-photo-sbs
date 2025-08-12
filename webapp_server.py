@@ -4,7 +4,7 @@ import yaml
 from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -222,6 +222,12 @@ async def generate_3d(
         return {"job_id": work_id, "key": out_key}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/")
+async def root():
+    """Serve the main application page"""
+    return FileResponse(os.path.join(static_dir, "index.html"))
 
 
 @app.get("/api/progress/{job_id}")
