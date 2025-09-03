@@ -1124,3 +1124,23 @@ def convert2tensor(input_dict):
             rt_dict[key] = torch.FloatTensor(value)[None, None, ...]
 
     return rt_dict
+
+def stereo_poses(baseline_ratio=0.02):
+    """
+    Returns two poses (left/right) for SBS.
+    baseline_ratio ~ percent of image width at median depth.
+    """
+    # identity rotation
+    R = np.eye(3, dtype=np.float32)
+
+    # translate camera left/right (opposite sign because camera moves, not scene)
+    tx = baseline_ratio * 0.5  # half for each eye
+
+    # Poses are 4x4 [R|t] extrinsics. Adjust to your project’s Pose type if needed.
+    left = np.eye(4, dtype=np.float32)
+    left[:3, :3] = R
+    left[0, 3] = +tx
+    right = np.eye(4, dtype=np.float32)
+    right[:3, :3] = R
+    right[0, 3] = -tx
+    return [left, right]
