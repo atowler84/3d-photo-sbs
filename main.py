@@ -1,20 +1,17 @@
+from bilateral_filtering import sparse_bilateral_filtering
 import numpy as np
 import argparse
-import glob
 import os
 import re
-from functools import partial
 import vispy
-import scipy.misc as misc
 from tqdm import tqdm
 import yaml
 import time
-import sys
-from mesh import write_ply, read_ply, output_3d_photo
+from mesh import write_ply, read_ply, output_3d_photo, Canvas_view
+from mesh_tools import stereo_poses
 from utils import get_MiDaS_samples, read_MiDaS_depth
 import torch
 import cv2
-from skimage.transform import resize
 import imageio
 import copy
 from networks import Inpaint_Color_Net, Inpaint_Depth_Net, Inpaint_Edge_Net
@@ -24,7 +21,6 @@ Note on optional depth backends:
 - MiDaS and BoostMonoDepth are optional and imported lazily only when enabled in config.
 - This allows removing the `MiDaS/` directory when not used.
 """
-from bilateral_filtering import sparse_bilateral_filtering
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--config', type=str, default='argument.yml',help='Configure of post processing')
@@ -83,6 +79,53 @@ if env_speed:
         config['speed_multiplier'] = float(env_speed)
     except Exception:
         pass
+
+# Side-by-side (SBS)
+env_sbs = os.environ.get('SBS_MODE')
+env_sbs_ratio = os.environ.get('SBS_RATIO')
+env_sbs_half = os.environ.get('SBS_HALF')
+if env_sbs:
+    config['sbs_mode'] = True
+if env_sbs_ratio is not None:
+    config['sbs_ratio'] = env_sbs_ratio
+if env_sbs_half:
+    config['sbs_half'] = True
+    
+def _render_single_pose_frame(verts, faces, colors, H, W, hFov, vFov,
+                             ref_pose, pose, original_H=None, original_W=None):
+    # Same FOV/canvas logic as mesh.output_3d_photo
+    fov_rad = max(vFov, hFov)
+    fov_deg = (fov_rad * 180.0 / np.pi)
+    canvas_w = original_W if original_W is not None else W
+    canvas_h = original_H if original_H is not None else H
+    canvas_size = max(canvas_h, canvas_w)
+    desired_ratio = float(canvas_h) / float(canvas_w)
+
+    cvw = Canvas_view(fov_deg, verts, faces, colors[..., :3], canvas_size=canvas_size, factor=1, bgcolor='gray')
+    # Apply relative pose exactly like video code
+    rel = np.linalg.inv(pose @ np.linalg.inv(ref_pose))
+    import transforms3d
+    axis, angle = transforms3d.axangles.mat2axangle(rel[0:3, 0:3])
+    cvw.rotate(axis=axis, angle=(angle * 180.0) / np.pi)
+    cvw.translate(rel[:3, 3])
+    cvw.view_changed()
+
+    img = cvw.render()
+
+    # Match the center-crop the video code does to preserve original aspect
+    ih, iw = img.shape[0], img.shape[1]
+    if ih / iw > desired_ratio:
+        new_h = int(round(iw * desired_ratio))
+        top = max((ih - new_h) // 2, 0)
+        bottom = top + new_h
+        left, right = 0, iw
+    else:
+        new_w = int(round(ih / desired_ratio))
+        left = max((iw - new_w) // 2, 0)
+        right = left + new_w
+        top, bottom = 0, ih
+    img = img[top:bottom, left:right]
+    return img[:, :, :3]
 
 # Optional explicit pixel crop after aspect crop
 def _read_px(name: str):
@@ -310,6 +353,32 @@ for idx in tqdm(range(len(sample_list))):
     else:
         verts, colors, faces, Height, Width, hFov, vFov = rt_info
 
+    if config.get('sbs_mode'):
+        # Build poses
+        base = float(config.get('sbs_ratio', 0.02) or 0.02)
+        left_pose, right_pose = stereo_poses(baseline_ratio=base)
+
+        # Render exactly one frame per eye
+        left_img  = _render_single_pose_frame(verts, faces, colors, Height, Width, hFov, vFov,
+                                            sample['ref_pose'], left_pose,
+                                            config.get('original_h'), config.get('original_w'))
+        right_img = _render_single_pose_frame(verts, faces, colors, Height, Width, hFov, vFov,
+                                            sample['ref_pose'], right_pose,
+                                            config.get('original_h'), config.get('original_w'))
+
+        # Optional half-SBS
+        if config.get('sbs_half'):
+            h, w = left_img.shape[:2]
+            left_img  = cv2.resize(left_img,  (w // 2, h), interpolation=cv2.INTER_AREA)
+            right_img = cv2.resize(right_img, (w // 2, h), interpolation=cv2.INTER_AREA)
+
+        sbs = np.concatenate([left_img, right_img], axis=1)
+        os.makedirs(config['video_folder'], exist_ok=True)
+        base_name = sample['tgt_name'][0]
+        out_img = os.path.join(config['video_folder'], f"{base_name}_sbs.png")
+        cv2.imwrite(out_img, cv2.cvtColor(sbs, cv2.COLOR_RGB2BGR))
+        write_progress(100, f"Saved SBS to {out_img}")
+        continue  # skip video path
 
     print(f"Making video at {time.time()}")
     videos_poses, video_basename = copy.deepcopy(sample['tgts_poses']), sample['tgt_name']

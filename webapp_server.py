@@ -11,7 +11,6 @@ import uvicorn
 import subprocess
 import threading
 import json
-from pathlib import Path
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -65,7 +64,10 @@ def _run_job(
     crop_left_px: Optional[int] = None,
     crop_right_px: Optional[int] = None,
     speed: Optional[float] = None,
-    debug: Optional[bool] = None,
+    debug: Optional[bool] = True,
+    sbs: Optional[bool] = None,
+    sbs_ratio: Optional[float] = None,
+    sbs_half: Optional[bool] = None
 ):
     image_dir = os.path.join(PROJECT_ROOT, "image")
     depth_dir = os.path.join(PROJECT_ROOT, "depth")
@@ -100,12 +102,19 @@ def _run_job(
         env["LOOP_MODE"] = "1"
     if speed is not None:
         env["SPEED_MULTIPLIER"] = str(speed)
-    # Always enable debug directory so we can stream intermediate assets in UI
-    env["DEBUG_MODE"] = "1"
+    if debug:
+        env["DEBUG_MODE"] = "1"
     debug_subdir = os.path.join(static_dir, f"dbg_{work_id}")
     os.makedirs(debug_subdir, exist_ok=True)
     env["DEBUG_DIR"] = debug_subdir
     env["WORK_ID"] = work_id
+    # Side-By-Side (SBS)
+    if sbs:
+        env["SBS_MODE"] = "1"
+    if sbs_ratio is not None:
+        env["SBS_RATIO"] = str(sbs_ratio)
+    if sbs_half:
+        env["SBS_HALF"] = "1"
     # crop px borders (applied after aspect crop)
     if crop_top_px is not None:
         env["CROP_TOP_PX"] = str(max(0, int(crop_top_px)))
@@ -128,11 +137,16 @@ def _run_job(
     # Prepare result if success
     if proc.returncode == 0:
         videos = []
+        sbs_image = None
+        
         # copy staged videos into static/ now that generation finished
         if os.path.isdir(staged_video_dir):
             for f in os.listdir(staged_video_dir):
-                if f.startswith(out_key) and f.lower().endswith((".mp4", ".webm", ".mov")):
-                    src = os.path.join(staged_video_dir, f)
+                name_lower = f.lower()
+                src = os.path.join(staged_video_dir, f)
+                
+                # Copy videos
+                if f.startswith(out_key) and name_lower.endswith((".mp4", ".webm", ".mov")):
                     dst = os.path.join(static_dir, f)
                     try:
                         if not os.path.exists(dst):
@@ -140,11 +154,31 @@ def _run_job(
                                 wf.write(rf.read())
                     except Exception:
                         pass
+                
+                # Copy SBS image
+                if f.startswith(out_key) and name_lower.endswith((".png", ".jpg", ".jpeg", ".webp")) and ("sbs" in name_lower):
+                    dst = os.path.join(static_dir, f)
+                    try:
+                        if not os.path.exists(dst):
+                            with open(src, "rb") as rf, open(dst, "wb") as wf:
+                                wf.write(rf.read())
+                    except Exception:
+                        pass
+            
         # collect videos from static after copy
         if os.path.isdir(static_dir):
             for f in os.listdir(static_dir):
                 if f.startswith(out_key) and f.lower().endswith((".mp4", ".webm", ".mov")):
                     videos.append(f"/static/{f}")
+                    
+        # collect SBS image from static (NEW)
+        if os.path.isdir(static_dir) and sbs_image is None:
+            for f in sorted(os.listdir(static_dir)):
+                name_lower = f.lower()
+                if f.startswith(out_key) and name_lower.endswith((".png", ".jpg", ".jpeg", ".webp")) and ("sbs" in name_lower):
+                    sbs_image = f"/static/{f}"
+                    break
+        
         debug_assets = []
         # collect debug files if any
         dbg_dir = os.path.join(static_dir, f"dbg_{work_id}")
@@ -153,7 +187,13 @@ def _run_job(
                 if f.lower().endswith((".png", ".jpg", ".jpeg")):
                     debug_assets.append(f"/static/dbg_{work_id}/{f}")
         # Mesh serving disabled by default
-        jobs[work_id]["result"] = {"key": out_key, "videos": videos, "mesh": None, "debug_assets": debug_assets}
+        jobs[work_id]["result"] = {
+            "key": out_key, 
+            "videos": videos, 
+            "mesh": None, 
+            "debug_assets": debug_assets,
+            "sbs_image": sbs_image,
+        }
     # Mark done
     jobs[work_id]["done"] = True
     if proc.returncode != 0:
@@ -176,6 +216,9 @@ async def generate_3d(
     encoder: Optional[str] = Form(None),
     longer_side: Optional[int] = Form(None),
     fast: Optional[bool] = Form(False),
+    sbs: Optional[bool] = Form(False),
+    sbs_ratio: Optional[float] = Form(None),
+    sbs_half: Optional[bool] = Form(False),
     duration: Optional[float] = Form(None),
     fps: Optional[int] = Form(None),
     loop: Optional[bool] = Form(False),
@@ -212,10 +255,34 @@ async def generate_3d(
 
         # Create job entry
         out_key = os.path.splitext(os.path.basename(image_path))[0]
-        jobs[work_id] = {"done": False, "result": None, "stdout": None, "stderr": None, "returncode": None}
+        jobs[work_id] = {
+            "done": False, 
+            "result": None, 
+            "stdout": None, 
+            "stderr": None, 
+            "returncode": None
+        }
         t = threading.Thread(
             target=_run_job,
-            args=(work_id, out_key, encoder, bool(fast), longer_side, duration, fps, bool(loop), crop_top, crop_bottom, crop_left, crop_right, speed, bool(debug)),
+            args=(
+                work_id, 
+                out_key, 
+                encoder, 
+                bool(fast), 
+                longer_side, 
+                duration, 
+                fps, 
+                bool(loop), 
+                crop_top, 
+                crop_bottom, 
+                crop_left, 
+                crop_right, 
+                speed, 
+                bool(debug),
+                bool(sbs),
+                sbs_ratio,
+                bool(sbs_half),
+            ),
             daemon=True,
         )
         t.start()
@@ -276,6 +343,6 @@ def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run("webapp_server:app", host="0.0.0.0", port=8008, reload=False)
+    uvicorn.run("webapp_server:app", host="127.0.0.1", port=8008, reload=False)
 
 
