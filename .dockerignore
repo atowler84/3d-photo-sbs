@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.cache/
+video/
+image/
+mesh/
+*.pth
+*.pt
+hf-cache/
+mesa-cache/
