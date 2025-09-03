@@ -1,0 +1,40 @@
+services:
+  spatial-photo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: spatial-photo:cuda
+    ports:
+      - "8008:8008"
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility,graphics"
+
+      HF_HOME: "/home/app/.cache/huggingface"
+      HUGGINGFACE_HUB_CACHE: "/home/app/.cache/huggingface"
+      TRANSFORMERS_CACHE: "/home/app/.cache/huggingface"
+
+      MPLCONFIGDIR: "/home/app/.config/matplotlib"
+      MPLBACKEND: "Agg"
+      QT_QPA_PLATFORM: "offscreen"
+
+      # GLX + PyQt5 backend via Xvfb
+      VISPY_APP_BACKEND: "pyqt5"
+      VISPY_USE_APP: "pyqt5"
+      PYOPENGL_PLATFORM: "glx"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      MESA_LOADER_DRIVER_OVERRIDE: "swrast"
+      LIBGL_DRIVERS_PATH: "/usr/lib/x86_64-linux-gnu/dri"
+
+      LD_PRELOAD: "/usr/lib/x86_64-linux-gnu/libstdc++.so.6:/usr/lib/x86_64-linux-gnu/libgcc_s.so.1"
+      XDG_RUNTIME_DIR: "/tmp/runtime-app"
+      MESA_SHADER_CACHE_DIR: "/home/app/.cache/mesa_shader_cache"
+
+    volumes:
+      - ./checkpoints:/app/checkpoints
+      - ./video:/app/video
+      - ./image:/app/image
+      - ./mesh:/app/mesh
+      - ./hf-cache:/home/app/.cache/huggingface
+      - ./mpl-config:/home/app/.config/matplotlib
