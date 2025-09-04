@@ -1,9 +1,11 @@
 import os
+import pathlib
 import uuid
 import yaml
+import mimetypes
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -336,6 +338,17 @@ def result(job_id: str):
         return JSONResponse(status_code=500, content={"error": "Generation failed", "stderr": job["stderr"], "stdout": job["stdout"]})
     return {"done": True, **(job["result"] or {})}
 
+@app.get("/api/download/sbs/{filename}")
+def download_sbs(filename: str):
+    # prevent path traversal, only allow basenames under /static
+    safe_name = os.path.basename(filename)
+    if "sbs" not in safe_name.lower():
+        raise HTTPException(status_code=400, detail="Invalid file")
+    p = pathlib.Path("static") / safe_name
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    media_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+    return FileResponse(path=p, media_type=media_type, filename=p.name)
 
 @app.get("/api/health")
 def health():
@@ -343,6 +356,6 @@ def health():
 
 
 if __name__ == "__main__":
-    uvicorn.run("webapp_server:app", host="127.0.0.1", port=8008, reload=False)
+    uvicorn.run("webapp_server:app", host="0.0.0.0", port=8008, reload=False)
 
 
