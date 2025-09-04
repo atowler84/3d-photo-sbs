@@ -259,8 +259,10 @@ for idx in tqdm(range(len(sample_list))):
     effective_longer = min(requested_longer, current_longer)
     frac = float(effective_longer) / float(current_longer) if current_longer > 0 else 1.0
     # Ensure even dimensions early to avoid later resizes in video writer
-    new_h = int(config['output_h'] * frac); new_w = int(config['output_w'] * frac)
-    new_h -= (new_h % 2); new_w -= (new_w % 2)
+    new_h = int(config['output_h'] * frac)
+    new_w = int(config['output_w'] * frac)
+    new_h -= (new_h % 2)
+    new_w -= (new_w % 2)
     config['output_h'], config['output_w'] = max(2, new_h), max(2, new_w)
     config['original_h'], config['original_w'] = config['output_h'], config['output_w']
     if image.ndim == 2:
@@ -369,8 +371,8 @@ for idx in tqdm(range(len(sample_list))):
         # Optional half-SBS
         if config.get('sbs_half'):
             h, w = left_img.shape[:2]
-            left_img  = cv2.resize(left_img,  (w // 2, h), interpolation=cv2.INTER_AREA)
-            right_img = cv2.resize(right_img, (w // 2, h), interpolation=cv2.INTER_AREA)
+            left_img  = cv2.resize(np.asarray(left_img),  (w // 2, h), interpolation=cv2.INTER_AREA)
+            right_img = cv2.resize(np.asarray(right_img), (w // 2, h), interpolation=cv2.INTER_AREA)
 
         sbs = np.concatenate([left_img, right_img], axis=1)
         os.makedirs(config['video_folder'], exist_ok=True)

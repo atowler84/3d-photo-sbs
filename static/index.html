@@ -642,6 +642,15 @@
               img.style.border = '1px solid var(--border)';
               img.style.borderRadius = '10px';
               out.appendChild(img);
+
+              const fname = resData.sbs_image.split('/').pop();
+              const dl = document.createElement('a');
+              dl.href = `/api/download/sbs/${fname}`;
+              dl.className = 'btn';
+              dl.textContent = 'Download SBS (full-res)';
+              dl.style.display = 'inline-block';
+              dl.style.marginTop = '10px';
+              out.appendChild(dl);
             }
             if (wasDebug && resData.debug_assets && resData.debug_assets.length) {
               const h = document.createElement('div'); h.className = 'tag'; h.textContent = 'Debug outputs'; out.appendChild(h);
