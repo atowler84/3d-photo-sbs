@@ -160,9 +160,17 @@ class App:
             convergence=round(self.convergence.get(), 3),
             cross_eyed=self.cross.get(),
             save_depth=self.save_depth.get(),
+            on_oversize=self._ask_oversize,
         )
         self.converter.settings = settings
         threading.Thread(target=self._work, args=(list(self.photos), self.output_dir), daemon=True).start()
+
+    def _ask_oversize(self, oversize):
+        """Put a too-large photo to the user.  Runs on the worker thread, so the
+        question goes to the main loop as an event and waits for the answer."""
+        reply = queue.Queue(maxsize=1)
+        self.events.put(("ask", (oversize, reply)))
+        return reply.get()
 
     def _work(self, photos, output_dir):
         try:
@@ -178,6 +186,9 @@ class App:
                     info = self.converter.convert(photo, output_dir)
                 except Exception as error:
                     self.events.put(("error", f"{photo.name}: {error}"))
+                    continue
+                if info is None:  # too large, and the user chose to skip it
+                    self.events.put(("skipped", photo))
                     continue
                 self.events.put(("done", info))
         finally:
@@ -196,18 +207,39 @@ class App:
                 # batch cannot bury the user in modal windows.
                 self.errors.append(payload)
                 self.status.config(text=payload)
+            elif kind == "ask":
+                oversize, reply = payload
+                reply.put(self._oversize_dialog(oversize))
+            elif kind == "skipped":
+                self.finished += 1
+                self.progress.config(value=self.finished)
+                self.status.config(text=f"Skipped {payload.name} - too large for memory")
             elif kind == "done":
                 self.finished += 1
                 self.progress.config(value=self.finished)  # step() wraps to 0 at the end
                 width, height = payload["output_size"]
+                was = payload["resized_from"]
+                note = f"  (resized from {was[0]}x{was[1]})" if was else ""
                 self.status.config(
-                    text=f"{payload['output'].name}  -  {width}x{height}  in {payload['seconds']:.1f}s")
+                    text=f"{payload['output'].name}  -  {width}x{height}  "
+                         f"in {payload['seconds']:.1f}s{note}")
                 self._show(payload["output"])
             elif kind == "finished":
                 self.convert_button.state(["!disabled"])
                 if self.errors:
                     messagebox.showerror("sbs3d", "\n".join(self.errors))
         self.root.after(100, self._drain)
+
+    def _oversize_dialog(self, oversize):
+        """The modal question itself, on the main thread where Tk wants it."""
+        if oversize.target is None:
+            messagebox.showerror("sbs3d", oversize.describe())
+            return "skip"
+        resize = messagebox.askyesno(
+            "sbs3d - photo too large",
+            f"{oversize.describe()}\n\nResize it and convert, or skip this photo?",
+            default="yes", icon="question")
+        return "resize" if resize else "skip"
 
     def _show(self, path):
         try:

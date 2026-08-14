@@ -26,6 +26,40 @@ def collect(inputs):
     return [p for p in found if not p.stem.endswith(("_sbs", "_depth"))]
 
 
+def oversize_handler(mode):
+    """What to do about a photo that will not fit, as `Settings.on_oversize`.
+
+    Asking needs someone there to answer, so a pipe or a cron job quietly gets
+    the safe half of the choice rather than blocking forever on a prompt.
+    """
+    def settled(oversize):
+        # The outcome line covers an ordinary resize; a photo no resize can
+        # save still needs explaining.
+        if oversize.target is None:
+            print(f"\n{oversize.describe()}", file=sys.stderr)
+        return mode
+
+    if mode in ("resize", "skip"):
+        return settled
+
+    def ask(oversize):
+        print(f"\n{oversize.describe()}", file=sys.stderr)
+        if oversize.target is None:
+            return "skip"  # nothing to offer, and describe() has said why
+        if not sys.stdin.isatty():
+            print("Not running interactively, so skipping it. "
+                  "Pass --oversize resize to shrink photos like this instead.", file=sys.stderr)
+            return "skip"
+        while True:
+            answer = input("Resize and convert it, or skip it? [r/s] ").strip().lower()
+            if answer in ("r", "resize"):
+                return "resize"
+            if answer in ("s", "skip", ""):
+                return "skip"
+
+    return ask
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="sbs3d",
@@ -48,6 +82,8 @@ def build_parser():
     parser.add_argument("-q", "--quality", type=int, default=95, help="JPEG quality")
     parser.add_argument("--save-depth", action="store_true", help="also write a 16-bit depth map")
     parser.add_argument("--device", default="auto", help="auto, cuda, mps or cpu")
+    parser.add_argument("--oversize", choices=("ask", "skip", "resize"), default="ask",
+                        help="a photo too big for memory: ask, skip it, or resize it to fit")
     parser.add_argument("--gui", action="store_true", help="open the desktop window instead")
     parser.add_argument("-V", "--version", action="version", version=f"sbs3d {__version__}")
     return parser
@@ -82,9 +118,10 @@ def main(argv=None):
         fmt=args.fmt,
         save_depth=args.save_depth,
         device=args.device,
+        on_oversize=oversize_handler(args.oversize),
     )
     converter = Converter(settings)
-    failures = 0
+    failures = skipped = 0
     for index, photo in enumerate(photos, 1):
         prefix = f"[{index}/{len(photos)}] " if len(photos) > 1 else ""
         try:
@@ -93,8 +130,18 @@ def main(argv=None):
             failures += 1
             print(f"{prefix}{photo.name}: {error}", file=sys.stderr)
             continue
+        if info is None:  # too big, and the answer was to skip it
+            skipped += 1
+            print(f"{prefix}{photo.name}: skipped", file=sys.stderr)
+            continue
         width, height = info["output_size"]
-        print(f"{prefix}{info['output']}  {width}x{height}  {info['seconds']:.1f}s")
+        note = ""
+        if info["resized_from"]:
+            was, now = info["resized_from"], info["source_size"]
+            note = f"  (resized from {was[0]}x{was[1]} to {now[0]}x{now[1]})"
+        print(f"{prefix}{info['output']}  {width}x{height}  {info['seconds']:.1f}s{note}")
+    if skipped:
+        print(f"{skipped} photo{'s' if skipped > 1 else ''} skipped as too large", file=sys.stderr)
     return 1 if failures else 0
 
 

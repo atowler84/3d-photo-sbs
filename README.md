@@ -13,9 +13,18 @@ headset or view free-eyed. Nothing is downscaled along the way.
 | 60 MP | 18664 × 6336 | 4.1 s |
 
 Measured on an RTX 4080 Super with the model already loaded; add about two
-seconds for the first photo of a session. There is a CPU path too, roughly ten
-times slower, and the GPU path falls back to it automatically if a photo will not
-fit in video memory.
+seconds for the first photo of a session. The GPU path falls back to the CPU
+automatically if a photo will not fit in video memory, and offers to resize a
+photo that will not fit there either -- see [when a photo is too
+big](#when-a-photo-is-too-big).
+
+There is a CPU path too, and it is a lot slower: the same three photos take
+20 s, 24 s and 34 s on an eight-core Ryzen 7 7800X3D. Most of that is a fixed
+cost rather than a per-pixel one, because the depth network always runs at a
+518-1036 px short side no matter how big the photo is, so a snapshot costs
+almost as much as a 60 MP raw. `--model base` brings those three down to 7 s,
+12 s and 20 s for slightly softer depth edges, which is the trade worth making
+on a machine without a GPU.
 
 ```
 photo.jpg  ->  photo_sbs.jpg        (left | right, full width, no downscaling)
@@ -58,6 +67,43 @@ sbs3d-gui
 The window keeps the depth model resident, so the first photo pays the two second
 load and the rest convert in well under a second each.
 
+## When a photo is too big
+
+Every conversion is sized up before the photo is even decoded, against what the
+machine actually has free at that moment. A photo that will not fit in video
+memory moves to the CPU, which usually has far more room. Only when it will not
+fit there either is there a decision to make, and the app puts it to you rather
+than guessing:
+
+```
+holiday.jpg is 11648x8736 (101.8 MP) and needs about 13.0 GB, but only 6.2 GB of memory is free.
+Resizing to 7409x5556 (41.2 MP) would fit -- 64% of the width, 40% of the pixels.
+The side-by-side image would come out about 14522x5556 instead of 22832x8736.
+Resize and convert it, or skip it? [r/s]
+```
+
+The size offered is the largest one predicted to fit, so the detail given up is
+the least that gets the photo converted. The window asks the same question in a
+dialog. Nothing is ever downscaled without an answer: `--oversize skip` and a
+non-interactive run both leave the photo alone and say so, and `--oversize
+resize` takes the offer every time, for scripts that would rather have a
+slightly smaller 3D photo than none.
+
+The estimate is not calibrated to any particular machine. What a conversion
+costs is worked out from the model you loaded, the precision it runs at and the
+resolution it will run at, so a `small` model on a 4 GB card is judged on what
+it actually needs rather than on what `large` would have needed. Free memory is
+read from the machine itself -- the driver on CUDA and Apple silicon, the kernel
+on Linux, Windows and macOS -- and both devices are priced, since a generous card
+in a busy machine can have more to spare than the system does. When the depth
+model alone is what does not fit, no resize can help, and it says which lighter
+model would:
+
+```
+No smaller size would fit either: the depth model needs that much whatever size the photo is.
+The base depth model would fit, and costs little in quality (--model base).
+```
+
 ## Which settings?
 
 None of them, most of the time: press Convert.
@@ -97,6 +143,7 @@ quality reason to touch them.
 | `--format`, `-q` | `auto`, `95` | Output container and JPEG quality. |
 | `--save-depth` | off | Also write a 16-bit `_depth.png`. |
 | `--device` | `auto` | `cuda`, `mps` or `cpu`. |
+| `--oversize` | `ask` | A photo too big for memory: `ask` what to do, `skip` it, or `resize` it to the largest size that fits. |
 
 As a library:
 

@@ -31,6 +31,13 @@ def _use_local_cache():
         os.environ["HF_HUB_CACHE"] = local
 
 
+def dtype_for(device):
+    """fp16 halves the memory traffic on a GPU and is indistinguishable here;
+    CPU stays fp32.  `budget` prices the other device with this too, so an
+    estimate never disagrees with what would actually run."""
+    return torch.float16 if device.type == "cuda" else torch.float32
+
+
 def pick_device(request="auto"):
     if request != "auto":
         return torch.device(request)
@@ -52,8 +59,7 @@ class DepthEstimator:
 
         self.device = pick_device(device)
         self.name = model
-        # fp16 halves the memory traffic and is indistinguishable here; CPU stays fp32.
-        self.dtype = torch.float16 if self.device.type == "cuda" else torch.float32
+        self.dtype = dtype_for(self.device)
         self.model = (
             AutoModelForDepthEstimation.from_pretrained(MODELS[model], dtype=self.dtype)
             .to(self.device)
@@ -70,6 +76,16 @@ class DepthEstimator:
             return int(min(MAX_SIZE, max(MIN_SIZE, short_side)))
         return max(PATCH, int(size))
 
+    def working_size(self, height, width, size="auto"):
+        """The resolution the network will actually run at for this shape.
+
+        Shared with `budget`, which prices a conversion before one happens, so
+        that what is charged for and what is run are never two different sizes.
+        """
+        scale = self.resolve_size(size, min(height, width)) / min(height, width)
+        return (max(PATCH, int(round(height * scale / PATCH)) * PATCH),
+                max(PATCH, int(round(width * scale / PATCH)) * PATCH))
+
     @torch.inference_mode()
     def __call__(self, image, size="auto"):
         """Estimate relative inverse depth (bigger = nearer).
@@ -81,9 +97,7 @@ class DepthEstimator:
         """
         h, w = image.shape[:2]
         # Depth-Anything is trained with the *shorter* side at `size`, aspect kept.
-        scale = self.resolve_size(size, min(h, w)) / min(h, w)
-        th = max(PATCH, int(round(h * scale / PATCH)) * PATCH)
-        tw = max(PATCH, int(round(w * scale / PATCH)) * PATCH)
+        th, tw = self.working_size(h, w, size)
 
         x = torch.from_numpy(np.ascontiguousarray(image)).to(self.device)
         x = x.permute(2, 0, 1).float().div_(255.0)
