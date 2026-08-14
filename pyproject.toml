@@ -1,3 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbs3d"
+version = "1.0.0"
+description = "Turn a photo into a full-resolution side-by-side 3D image"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    "torch>=2.1",
+    "transformers>=4.41",
+    "pillow>=10.0",
+    "pillow-heif>=0.16",
+    "numpy>=1.24",
+]
+
+[project.scripts]
+sbs3d = "sbs3d.cli:main"
+sbs3d-gui = "sbs3d.gui:main"
+
+[tool.setuptools]
+packages = ["sbs3d"]
+
 [tool.black]
-line-length = 120
-target-version = ['py37']
+line-length = 110
