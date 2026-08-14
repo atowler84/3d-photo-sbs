@@ -1,6 +1,7 @@
 """Monocular depth estimation with Depth-Anything V2."""
 
 import os
+import sys
 
 import numpy as np
 import torch
@@ -22,13 +23,35 @@ _MEAN = (0.485, 0.456, 0.406)
 _STD = (0.229, 0.224, 0.225)
 
 
+def _app_dir():
+    """Where the app's own files sit: beside the exe once frozen, else the repo."""
+    if getattr(sys, "frozen", False):  # the packaged Windows build
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def _use_local_cache():
     """Prefer the checkpoints already sitting next to the app over ~/.cache."""
     if os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME"):
         return
-    local = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hf-cache")
+    local = os.path.join(_app_dir(), "hf-cache")
     if os.path.isdir(local):
         os.environ["HF_HUB_CACHE"] = local
+
+
+def checkpoint(model):
+    """Where to load `model` from.
+
+    Weights shipped with the app win.  The portable build puts them in a plain
+    `models/large` folder beside the exe, and a folder is something
+    `from_pretrained` reads without touching the network at all -- so it starts
+    the same whether or not the machine it landed on has any internet.
+    """
+    bundled = os.path.join(_app_dir(), "models", model)
+    if os.path.isdir(bundled):
+        return bundled
+    _use_local_cache()
+    return MODELS[model]
 
 
 def dtype_for(device):
@@ -54,14 +77,14 @@ class DepthEstimator:
     def __init__(self, model="large", device="auto"):
         if model not in MODELS:
             raise ValueError(f"unknown model {model!r}, pick one of {sorted(MODELS)}")
-        _use_local_cache()
+        source = checkpoint(model)
         from transformers import AutoModelForDepthEstimation  # heavy; import on demand
 
         self.device = pick_device(device)
         self.name = model
         self.dtype = dtype_for(self.device)
         self.model = (
-            AutoModelForDepthEstimation.from_pretrained(MODELS[model], dtype=self.dtype)
+            AutoModelForDepthEstimation.from_pretrained(source, dtype=self.dtype)
             .to(self.device)
             .eval()
         )

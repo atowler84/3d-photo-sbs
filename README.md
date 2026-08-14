@@ -50,6 +50,56 @@ Depth weights download themselves on first run (~1.3 GB for the large model) and
 are cached. If a `hf-cache/` folder exists next to the app it is used instead of
 `~/.cache/huggingface`, so an existing download is picked up automatically.
 
+## A Windows app
+
+`packaging/windows/build.ps1` freezes the lot -- Python, Torch, the weights --
+into one folder that runs on a Windows machine with nothing installed on it.
+Build it on Windows, with any Python from 3.10 to 3.14 (PyInstaller cannot
+cross-compile, so this one step has to happen there):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+```
+
+It leaves a zip in `%USERPROFILE%\sbs3d-build`. Unzip it anywhere -- a USB stick
+is fine -- and double-click `sbs3d.exe` for the window, or run
+`sbs3d-cli.exe --help` for the command line. Nothing is installed and nothing is
+downloaded on first run: the weights ship in `models\large` beside the exe, so
+it works on a machine that has never seen the internet.
+
+| switch | |
+| --- | --- |
+| `-Cuda` | build against CUDA Torch: about three times the size, and the difference between 20 seconds a photo and a tenth of one |
+| `-Models small,base,large` | which checkpoints to ship; `large` alone by default |
+| `-Work <dir>` | where to build, `%USERPROFILE%\sbs3d-build` by default |
+| `-SkipZip` | leave the folder without packing it |
+| `-Python <path>` | which `python.exe` to build with; found on its own otherwise |
+| `-TorchIndex cu130` | a different CUDA build of Torch. The default `cu126` runs on any driver from 525 up, where `cu130` wants 580 or newer -- and note there is no `cu128` wheel for Python 3.14 |
+
+With `-SkipZip` the app is left at `%USERPROFILE%\sbs3d-build\dist-<flavour>\sbs3d`,
+ready to copy wherever it is going to live. Move it somewhere of its own before
+building again, because the next build overwrites that folder.
+
+A build wants room to work in -- roughly 4 GB for the CPU one and 12 GB for
+CUDA, most of it the environment being frozen. All of it is disposable
+afterwards except `sbs3d-build\models`, which is worth keeping so that a rebuild
+does not fetch the weights all over again.
+
+The CPU folder comes to about 1.9 GB -- nearly three quarters of it the large
+model's weights -- and zips to 1.5 GB, since neither weights nor DLLs compress.
+`-Models small` trades a little depth quality for a 700 MB app. `-Cuda` builds
+5.4 GB instead, almost all of it CUDA kernels, and is worth every byte on a
+machine with the card to use them: 0.1 s a photo against 21.8 s.
+
+Either way the first photo of a session pays for loading the model, and on CUDA
+the first run on a new machine pays again while the driver builds its kernel
+cache -- 14 s once, then 3 s at the start of each session, then a tenth of a
+second per photo.
+
+Windows has no way to know an unsigned exe, so the first run brings up a
+SmartScreen box -- More info, then Run anyway -- and only a signing certificate
+makes that go away.
+
 ## Use it
 
 ```bash
@@ -192,6 +242,10 @@ The depth weights are downloaded at runtime rather than shipped here, and carry
 their own terms: Depth-Anything V2 Small is Apache-2.0, while Base and Large —
 Large being the default — are CC BY-NC 4.0, so they are not licensed for
 commercial use.
+
+That is worth a thought before handing the Windows build to anyone, since it
+carries the weights inside it: a default build is not one to sell, and
+`-Models small` makes an Apache-2.0 one that is.
 
 This repository began as a fork of
 [3D-Photo-Inpainting](https://github.com/vt-vl-lab/3d-photo-inpainting) by way of
