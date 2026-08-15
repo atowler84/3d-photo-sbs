@@ -103,7 +103,11 @@ Invoke-Tool $vpy @("-m", "pip", "install", "--index-url", "https://download.pyto
 $requirements = Get-Content (Join-Path $stage "requirements.txt") |
     Where-Object { $_ -and $_ -notmatch "^\s*#" -and $_ -notmatch "^torch\b" }
 Invoke-Tool $vpy (@("-m", "pip", "install") + $requirements + @("pyinstaller"))
-Invoke-Tool $vpy @("-m", "pip", "install", "--no-deps", "depth-anything-3")
+# --ignore-requires-python because the wheel caps itself at Python 3.13, which
+# was simply the newest version when it was published.  It is pure Python and
+# runs on 3.14 unchanged -- checked by importing it and converting a photo there.
+Invoke-Tool $vpy @("-m", "pip", "install", "--no-deps", "--ignore-requires-python",
+                   "depth-anything-3")
 
 # --- ffmpeg, for video -----------------------------------------------------
 # A build-time download rather than something the user has to install: the whole
@@ -149,6 +153,11 @@ foreach ($model in $Models) {
     $to = Join-Path $app "models\$model"
     New-Item -ItemType Directory -Path $to -Force | Out-Null
     Copy-Item (Join-Path $weights "$model\*") -Destination $to -Recurse -Force
+}
+# Beside the exe rather than inside the archive: that is where `video._tool`
+# looks, and where someone adding their own copy would put it.
+if (-not $SkipFfmpeg) {
+    Copy-Item (Join-Path $ffmpegDir "*.exe") -Destination $app -Force
 }
 Copy-Item (Join-Path $root "README.md") -Destination $app -Force
 Copy-Item (Join-Path $root "LICENSE") -Destination $app -Force

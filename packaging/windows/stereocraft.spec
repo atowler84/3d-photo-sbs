@@ -53,14 +53,10 @@ datas += [(ICON, "stereocraft")]
 # HEIC support is a compiled library that nothing imports by name.
 binaries = collect_dynamic_libs("pillow_heif")
 
-# ffmpeg, for video, if the build put a copy where it said it would.  It is
-# fetched beside the exe rather than built in, so `video._tool` finds it the
-# same way it would find one the user dropped there themselves.
-_ffmpeg = os.path.join(ROOT, "packaging", "windows", "ffmpeg")
-if os.path.isdir(_ffmpeg):
-    binaries += [(os.path.join(_ffmpeg, exe), ".")
-                 for exe in ("ffmpeg.exe", "ffprobe.exe")
-                 if os.path.exists(os.path.join(_ffmpeg, exe))]
+# ffmpeg is deliberately not bundled here.  PyInstaller puts everything it
+# collects under _internal, and `video._tool` looks beside the exe -- where a
+# user would drop their own copy.  build.ps1 lays it there after the freeze, the
+# same way it lays out the weights.
 
 a = Analysis(
     [os.path.join(SPECPATH, "launcher.py")],

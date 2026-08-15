@@ -285,7 +285,12 @@ def _encoder(out, src, clip, geo, cfg, stderr):
             "-s", f"{geo.width}x{geo.height}", "-r", f"{clip.fps}", "-i", "-"]
     sound = bool(cfg.audio and clip.audio)
     if sound:
-        args += ["-i", str(src), "-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+        # No -shortest here.  It looks like the safe option and is not: an AAC
+        # track carries a little encoder priming, which makes ffmpeg reckon it
+        # the shorter stream and truncate the picture to match.  On a 90-frame
+        # clip that quietly cost three frames off the end.  Every frame rendered
+        # is a frame worth keeping; a fractionally long soundtrack is harmless.
+        args += ["-i", str(src), "-map", "0:v:0", "-map", "1:a:0"]
     args += ["-c:v", ENCODERS.get(cfg.codec, ENCODERS["h264"]), "-crf", str(cfg.crf),
              "-preset", "medium", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     if sound:

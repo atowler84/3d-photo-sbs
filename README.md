@@ -72,7 +72,9 @@ are cached. If a `hf-cache/` folder exists next to the app it is used instead of
 `packaging/windows/build.ps1` freezes the lot -- Python, Torch, the weights --
 into one folder that runs on a Windows machine with nothing installed on it.
 Build it on Windows, with any Python from 3.10 to 3.14 (PyInstaller cannot
-cross-compile, so this one step has to happen there):
+cross-compile, so this one step has to happen there). Depth Anything 3's wheel
+declares a ceiling of 3.13, which was just the newest version when it was
+published; the build installs it past that, and it runs on 3.14 unchanged.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
@@ -93,7 +95,7 @@ has never seen the internet.
 | `-Work <dir>` | where to build, `%USERPROFILE%\StereoCraft-build` by default |
 | `-SkipZip` | leave the folder without packing it |
 | `-Python <path>` | which `python.exe` to build with; found on its own otherwise |
-| `-TorchIndex cu130` | a different CUDA build of Torch. The default `cu126` runs on any driver from 525 up, where `cu130` wants 580 or newer -- and note there is no `cu128` wheel for Python 3.14 |
+| `-TorchIndex cu130` | a different CUDA build of Torch. The default `cu126` runs on any driver from 525 up, where `cu130` wants 580 or newer. All three of `cu126`, `cu128` and `cu130` publish wheels for Python 3.14 |
 
 With `-SkipZip` the app is left in `dist-<flavour>\StereoCraft` under the build
 folder, ready to copy wherever it is going to live. Move it somewhere of its own
