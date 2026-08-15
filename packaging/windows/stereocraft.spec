@@ -10,7 +10,7 @@ import os
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir, os.pardir))
-ICON = os.path.join(SPECPATH, "stereocraft.ico")
+ICON = os.path.join(ROOT, "stereocraft", "stereocraft.ico")
 
 hiddenimports = [
     "stereocraft.cli",
@@ -27,6 +27,9 @@ hiddenimports = [
 # installed metadata for its version, so the .dist-info has to come along or
 # the whole library concludes it has no backend.
 datas = copy_metadata("torch", recursive=True) + copy_metadata("transformers", recursive=True)
+# The window sets its own title bar icon at runtime, so the file has to come
+# along as data as well as being built into the exe.
+datas += [(ICON, "stereocraft")]
 
 # HEIC support is a compiled library that nothing imports by name.
 binaries = collect_dynamic_libs("pillow_heif")

@@ -24,5 +24,8 @@ stereocraft-gui = "stereocraft.gui:main"
 [tool.setuptools]
 packages = ["stereocraft"]
 
+[tool.setuptools.package-data]
+stereocraft = ["*.ico"]
+
 [tool.black]
 line-length = 110

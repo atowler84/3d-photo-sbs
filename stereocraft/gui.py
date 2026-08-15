@@ -43,6 +43,7 @@ class App:
         self.errors = []
 
         root.title("StereoCraft - side-by-side 3D photos")
+        self._set_icon(root)
         root.minsize(700, 560)
         frame = ttk.Frame(root, padding=12)
         frame.pack(fill="both", expand=True)
@@ -93,6 +94,28 @@ class App:
         self._refresh_controls()
 
         root.after(100, self._drain)
+
+    @staticmethod
+    def _set_icon(root):
+        """Put the app's icon on the window.
+
+        Tk draws its own title bar icon and defaults to the Tcl feather, so the
+        one built into the exe never reaches the window and has to be set here.
+        """
+        path = Path(__file__).with_name("stereocraft.ico")
+        if not path.exists():  # running from a checkout without the icon
+            return
+        try:
+            root.iconbitmap(default=str(path))  # Windows takes the .ico itself
+        except tk.TclError:
+            try:  # X11 wants an image rather than an .ico, so decode it first
+                from PIL import Image, ImageTk
+
+                with Image.open(path) as image:
+                    root._icon = ImageTk.PhotoImage(image)  # Tk drops it unreferenced
+                root.iconphoto(True, root._icon)
+            except Exception:  # a window with the wrong icon still converts photos
+                pass
 
     def _build_settings(self, parent):
         box = ttk.LabelFrame(parent, text="Settings", padding=8)
