@@ -60,22 +60,46 @@ def oversize_handler(mode):
     return ask
 
 
+class Defaults(argparse.ArgumentDefaultsHelpFormatter):
+    """The stock formatter, less the "(default: None)" it would otherwise print
+    against the two settings whose default depends on whether the input moves."""
+
+    def _get_help_string(self, action):
+        return action.help if action.default is None else super()._get_help_string(action)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="stereocraft",
         description="Turn a photo into a full-resolution side-by-side 3D image.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=Defaults,
     )
     parser.add_argument("inputs", nargs="*", help="image files or folders")
     parser.add_argument("-o", "--output", help="output file, or folder for several inputs")
-    parser.add_argument("-d", "--disparity", type=float, default=2.0,
-                        help="eye separation, as a %% of image width; 1.5-3 is comfortable")
-    parser.add_argument("-c", "--convergence", type=float, default=0.9,
-                        help="depth that sits on the screen plane, 0 (far) to 1 (near)")
-    parser.add_argument("-m", "--model", choices=("small", "base", "large"), default="large",
-                        help="Depth-Anything V2 size")
-    parser.add_argument("--depth-size", default="auto",
-                        help="shorter side fed to the depth model, or auto to follow the photo")
+    parser.add_argument("-e", "--eyes", default=None, metavar="MM",
+                        help="distance between the two eyes, in millimetres, or auto to size it "
+                             "to the scene. 65 is the human average, and worth trying, but a "
+                             "close-up wants less and a landscape a great deal more")
+    parser.add_argument("-f", "--focus", default=None, metavar="METRES",
+                        help="how far away the screen plane sits, or auto. Whatever is at this "
+                             "distance has no separation; nearer comes forward, further recedes")
+    parser.add_argument("-t", "--target", type=float, default=None, metavar="PCT",
+                        help="what auto aims for: near-to-far separation as a %% of frame width. "
+                             "of frame width")
+    parser.add_argument("--limit", type=float, default=3.0, metavar="PCT",
+                        help="ceiling on separation as a %% of frame width, so something very "
+                             "close cannot demand more parallax than an eye can fuse")
+    parser.add_argument("-m", "--model", choices=("da3", "da2-small", "da2-base", "da2-large"),
+                        default="da3",
+                        help="da3 measures depth in metres; the da2 models only rank it, and are "
+                             "fitted onto an assumed range")
+    parser.add_argument("--depth-size", default=None,
+                        help="longest side fed to the depth model (shortest, for the da2 models), "
+                             "or auto to follow the photo")
+    # The old names meant something this no longer computes.  Failing loudly beats
+    # translating them into a number that only looks like what was asked for.
+    parser.add_argument("-d", "--disparity", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("-c", "--convergence", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--cross", action="store_true", help="write right|left for cross-eyed viewing")
     parser.add_argument("--max-size", type=int, default=0, help="cap the output width, 0 for native")
     parser.add_argument("--format", choices=("auto", "jpg", "png"), default="auto", dest="fmt")
@@ -84,13 +108,65 @@ def build_parser():
     parser.add_argument("--device", default="auto", help="auto, cuda, mps or cpu")
     parser.add_argument("--oversize", choices=("ask", "skip", "resize"), default="ask",
                         help="a photo too big for memory: ask, skip it, or resize it to fit")
+
     parser.add_argument("--gui", action="store_true", help="open the desktop window instead")
     parser.add_argument("-V", "--version", action="version", version=f"StereoCraft {__version__}")
     return parser
 
 
+def _number(value):
+    """A setting that is either a measurement or the word auto."""
+    if value is None or str(value).lower() == "auto":
+        return "auto"
+    return float(value)
+
+
+def settings_for(args):
+    """The settings a run converts with."""
+    common = dict(
+        model=args.model,
+        focus_m=_number(args.focus),
+        limit_pct=args.limit,
+        cross_eyed=args.cross,
+        device=args.device,
+        on_oversize=oversize_handler(args.oversize),
+    )
+    settings = Settings(**common, max_size=args.max_size, quality=args.quality,
+                        fmt=args.fmt, save_depth=args.save_depth)
+    if args.eyes is not None:
+        settings.eyes_mm = _number(args.eyes)
+    if args.target is not None:
+        settings.target_pct = args.target
+    if args.depth_size is not None:
+        settings.depth_size = args.depth_size
+    return settings
+
+
+def retired(args):
+    """The settings that used to exist, and what to say to someone still using them.
+
+    Depth is measured in metres now, so a percentage of frame width and a
+    normalised screen plane no longer describe anything the renderer does.  A
+    plausible-looking translation would quietly convert to a different picture
+    than the one that was asked for, which is worse than stopping.
+    """
+    for old, new, why in (
+        ("disparity", "--eyes MM",
+         "separation is worked out from the eye distance and the scene, not set as a percentage"),
+        ("convergence", "--focus METRES",
+         "the screen plane is a real distance now, not a position in a normalised range"),
+    ):
+        if getattr(args, old) is not None:
+            return f"--{old} is gone: use {new} instead, because {why}."
+    return None
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    retirement = retired(args)
+    if retirement:
+        print(retirement, file=sys.stderr)
+        return 2
     if args.gui:
         from .gui import main as gui_main
 
@@ -107,32 +183,19 @@ def main(argv=None):
         print("with several inputs, --output must be a folder", file=sys.stderr)
         return 2
 
-    settings = Settings(
-        model=args.model,
-        depth_size=args.depth_size,
-        disparity=args.disparity,
-        convergence=args.convergence,
-        cross_eyed=args.cross,
-        max_size=args.max_size,
-        quality=args.quality,
-        fmt=args.fmt,
-        save_depth=args.save_depth,
-        device=args.device,
-        on_oversize=oversize_handler(args.oversize),
-    )
-    converter = Converter(settings)
+    converter = Converter(settings_for(args))
     failures = skipped = 0
-    for index, photo in enumerate(photos, 1):
+    for index, item in enumerate(photos, 1):
         prefix = f"[{index}/{len(photos)}] " if len(photos) > 1 else ""
         try:
-            info = converter.convert(photo, args.output)
+            info = converter.convert(item, args.output)
         except Exception as error:  # keep a batch going when one photo is broken
             failures += 1
-            print(f"{prefix}{photo.name}: {error}", file=sys.stderr)
+            print(f"{prefix}{item.name}: {error}", file=sys.stderr)
             continue
         if info is None:  # too big, and the answer was to skip it
             skipped += 1
-            print(f"{prefix}{photo.name}: skipped", file=sys.stderr)
+            print(f"{prefix}{item.name}: skipped", file=sys.stderr)
             continue
         width, height = info["output_size"]
         note = ""

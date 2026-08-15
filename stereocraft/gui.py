@@ -7,6 +7,7 @@ depth model loaded so the second photo onwards converts in well under a second.
 import queue
 import sys
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -21,20 +22,28 @@ FILETYPES = [("Images", " ".join(f"*{s}" for s in sorted(SUFFIXES))), ("All file
 PREVIEW_WIDTH = 620
 # The window always uses the best depth model at its best working resolution --
 # the only settings on show are the ones that are a matter of taste.
-DEFAULT_DISPARITY = Settings.disparity
-DEFAULT_CONVERGENCE = Settings.convergence
-# How a photo's own row reports on it, so a batch can be followed without
+#
+# Where the manual sliders sit when they are not being driven by the scene.
+# `Settings` itself defaults to matching the scene, so these are the starting
+# points for someone who has turned that off: a real pair of eyes at a
+# comfortable distance.
+RECOMMENDED = (65.0, 3.0)
+
+
+# How each file's own row reports on it, so a batch can be followed without
 # reading the one status line at the bottom.
-MARKS = {"pending": " ", "working": "\u25b6", "done": "\u2713", "skipped": "\u2013", "failed": "\u2715"}
+MARKS = {"pending": " ", "working": "\u25b6", "done": "\u2713", "skipped": "\u2013",
+         "failed": "\u2715"}
 COLOURS = {"done": "#2e7d32", "skipped": "#8a6d1f", "failed": "#b00020", "working": "#1565c0"}
 
 
 class App:
     def __init__(self, root):
         self.root = root
-        self.photos = []
-        self.states = []  # one ("state", "detail") per photo, in step with it
+        self.files = []
+        self.states = []  # one ("state", "detail") per file, in step with it
         self.running = False
+        self.recommended = RECOMMENDED
         self.events = queue.Queue()
         self.converter = Converter()
         self.output_dir = None
@@ -52,13 +61,13 @@ class App:
 
         bar = ttk.Frame(frame)
         bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        self.add_button = ttk.Button(bar, text="Add photos...", command=self.add_photos)
+        self.add_button = ttk.Button(bar, text="Add files...", command=self.add_files)
         self.add_button.pack(side="left")
         self.remove_button = ttk.Button(bar, text="Remove", command=self.remove_selected)
         self.remove_button.pack(side="left", padx=4)
         self.clear_button = ttk.Button(bar, text="Clear", command=self.clear)
         self.clear_button.pack(side="left")
-        self.dest_label = ttk.Label(bar, text="Saving beside each photo")
+        self.dest_label = ttk.Label(bar, text="Saving beside each file")
         self.dest_label.pack(side="right")
         ttk.Button(bar, text="Output folder...", command=self.pick_output).pack(side="right", padx=6)
 
@@ -89,7 +98,7 @@ class App:
 
         # The settings a Reset would undo; watching them is what tells the button
         # whether there is anything left to undo.
-        for variable in (self.disparity, self.convergence, self.cross):
+        for variable in (self.eyes, self.focus, self.cross, self.automatic):
             variable.trace_add("write", lambda *_: self._refresh_controls())
         self._refresh_controls()
 
@@ -122,69 +131,95 @@ class App:
         box.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         box.columnconfigure(1, weight=1)
 
-        self.disparity = tk.DoubleVar(value=DEFAULT_DISPARITY)
-        self.convergence = tk.DoubleVar(value=DEFAULT_CONVERGENCE)
+        # On by default, because sizing the eyes to the scene beats any single
+        # number: the same 65mm that suits a portrait renders a close-up
+        # unfusable and a telephoto shot flat.
+        self.automatic = tk.BooleanVar(value=True)
+        self.eyes = tk.DoubleVar(value=self.recommended[0])
+        # Held as 1/metres rather than metres.  That is the quantity the geometry
+        # is linear in, so an inch of travel changes the picture by as much at one
+        # end of the slider as at the other; in metres the far half would do
+        # almost nothing and the near half everything.
+        self.focus = tk.DoubleVar(value=1.0 / self.recommended[1])
         self.cross = tk.BooleanVar(value=False)
         self.save_depth = tk.BooleanVar(value=False)
         self._value_labels = []
+        self._manual = []  # the sliders that only apply when not matching the scene
 
-        self._slider(box, 0, "Depth strength", self.disparity, 0.5, 4.0, "{:.1f}%",
-                     "How far apart your eyes are. Higher is stronger 3D, and harder to look at.")
-        self._slider(box, 2, "Screen plane", self.convergence, 0.0, 1.0, "{:.2f}",
-                     "Which depth sits at the window. Lower pushes the whole scene further back.")
+        self._slider(box, 0, "Eye separation", self.eyes, 20.0, 80.0, "{:.0f} mm",
+                     "How far apart your two eyes are. 65mm is the human average; smaller is a"
+                     " gentler effect, and a video is recommended gentler than a photo.")
+        self._slider(box, 2, "Focus distance", self.focus, 1.0 / 20, 1.0 / 0.5,
+                     lambda v: f"{1.0 / v:.1f} m",
+                     "How far away the window sits. Whatever is at this distance looks like it is"
+                     " in the screen; nearer comes out of it, further recedes behind it.")
 
         ttk.Checkbutton(box, text="Cross-eyed order (only for free-viewing without a headset)",
                         variable=self.cross).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Checkbutton(box, text="Also save the depth map", variable=self.save_depth).grid(
             row=5, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(box, text="Match the scene automatically (recommended)",
+                        variable=self.automatic, command=self._refresh_controls).grid(
+                            row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.reset_button = ttk.Button(box, text="Reset to recommended", command=self.reset_settings)
-        self.reset_button.grid(row=6, column=0, sticky="w", pady=(8, 0))
+        self.reset_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
 
     def _slider(self, parent, row, label, variable, low, high, fmt, hint):
+        """`fmt` is a format string, or a callable for a value the slider does not
+        hold directly -- focus distance being stored the other way up."""
+        show = fmt if callable(fmt) else fmt.format
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
-        value = ttk.Label(parent, text=fmt.format(variable.get()), width=7, anchor="e")
-        update = lambda *_: value.config(text=fmt.format(variable.get()))
-        ttk.Scale(parent, from_=low, to=high, variable=variable, orient="horizontal",
-                  command=update).grid(row=row, column=1, sticky="ew", padx=8)
+        value = ttk.Label(parent, text=show(variable.get()), width=8, anchor="e")
+        update = lambda *_: value.config(text=show(variable.get()))
+        scale = ttk.Scale(parent, from_=low, to=high, variable=variable, orient="horizontal",
+                          command=update)
+        scale.grid(row=row, column=1, sticky="ew", padx=8)
+        self._manual.append(scale)
         value.grid(row=row, column=2, sticky="w")
         ttk.Label(parent, text=hint, foreground="#777").grid(
             row=row + 1, column=0, columnspan=3, sticky="w", pady=(0, 4))
         self._value_labels.append(update)
 
     def reset_settings(self):
-        self.disparity.set(DEFAULT_DISPARITY)
-        self.convergence.set(DEFAULT_CONVERGENCE)
+        eyes, focus = self.recommended
+        self.eyes.set(eyes)
+        self.focus.set(1.0 / focus)
         self.cross.set(False)
         for update in self._value_labels:
             update()
 
+    def _sliders_at(self, values):
+        eyes, focus = values
+        return (round(self.eyes.get(), 1) == round(eyes, 1)
+                and round(1.0 / self.focus.get(), 2) == round(focus, 2))
+
     # --- file list ---------------------------------------------------------
-    def add_photos(self):
+    def add_files(self):
         chosen = filedialog.askopenfilenames(title="Choose photos", filetypes=FILETYPES)
         for name in chosen:
             path = Path(name)
-            if path not in self.photos:
-                self.photos.append(path)
+            if path not in self.files:
+                self.files.append(path)
                 self.states.append(("pending", ""))
-                self.listbox.insert("end", self._row_label(len(self.photos) - 1))
+                self.listbox.insert("end", self._row_label(len(self.files) - 1))
         self._refresh_status()
 
     def remove_selected(self):
         for index in sorted(self.listbox.curselection(), reverse=True):
             self.listbox.delete(index)
-            del self.photos[index]
+            del self.files[index]
             del self.states[index]
         self._refresh_status()
 
     def clear(self):
         self.listbox.delete(0, "end")
-        self.photos.clear()
+        self.files.clear()
         self.states.clear()
         self._refresh_status()
 
     def _row_label(self, index):
         state, detail = self.states[index]
-        label = f"{MARKS[state]}  {self.photos[index].name}"
+        label = f"{MARKS[state]}  {self.files[index].name}"
         return f"{label}   {detail}" if detail else label
 
     def _set_row(self, index, state, detail=""):
@@ -207,9 +242,7 @@ class App:
     def _at_defaults(self):
         """Is there anything for Reset to undo?  Only the three settings it
         actually puts back are asked about; saving the depth map is not one."""
-        return (round(self.disparity.get(), 2) == DEFAULT_DISPARITY
-                and round(self.convergence.get(), 3) == DEFAULT_CONVERGENCE
-                and not self.cross.get())
+        return self._sliders_at(self.recommended) and not self.cross.get()
 
     def _refresh_controls(self):
         """Offer only what there is currently something to do with."""
@@ -219,8 +252,9 @@ class App:
             # A batch works from the list as it stood when Convert was pressed,
             # so the list stays put until it has finished with it.
             (self.remove_button, idle and bool(self.listbox.curselection())),
-            (self.clear_button, idle and bool(self.photos)),
+            (self.clear_button, idle and bool(self.files)),
             (self.reset_button, not self._at_defaults()),
+            *((slider, not self.automatic.get()) for slider in self._manual),
         ):
             button.state(["!disabled"] if usable else ["disabled"])
 
@@ -228,36 +262,37 @@ class App:
         folder = filedialog.askdirectory(title="Choose an output folder")
         self.output_dir = Path(folder) if folder else None
         self.dest_label.config(text=f"Saving to {self.output_dir.name}" if self.output_dir
-                               else "Saving beside each photo")
+                               else "Saving beside each file")
 
     def _refresh_status(self):
-        count = len(self.photos)
+        count = len(self.files)
         self.status.config(text="Add a photo to begin" if not count
                            else f"{count} photo{'s' if count > 1 else ''} ready")
         self._refresh_controls()
 
     # --- conversion --------------------------------------------------------
     def start(self):
-        if not self.photos:
-            self.add_photos()
+        if not self.files:
+            self.add_files()
             return
         self.convert_button.state(["disabled"])
         self.running = True
         self.finished = 0
         self.errors = []
-        for index in range(len(self.photos)):
+        for index in range(len(self.files)):
             self._set_row(index, "pending")  # a re-run starts everything over
         self._refresh_controls()
-        self.progress.config(maximum=len(self.photos), value=0)
-        settings = Settings(
-            disparity=round(self.disparity.get(), 2),
-            convergence=round(self.convergence.get(), 3),
+        self.progress.config(maximum=len(self.files), value=0)
+        automatic = self.automatic.get()
+        common = dict(
+            eyes_mm="auto" if automatic else round(self.eyes.get(), 1),
+            focus_m="auto" if automatic else round(1.0 / self.focus.get(), 3),
             cross_eyed=self.cross.get(),
-            save_depth=self.save_depth.get(),
             on_oversize=self._ask_oversize,
         )
-        self.converter.settings = settings
-        threading.Thread(target=self._work, args=(list(self.photos), self.output_dir), daemon=True).start()
+        self.converter.settings = Settings(save_depth=self.save_depth.get(), **common)
+        threading.Thread(target=self._work, args=(list(self.files), self.output_dir),
+                         daemon=True).start()
 
     def _ask_oversize(self, oversize):
         """Put a too-large photo to the user.  Runs on the worker thread, so the
@@ -266,7 +301,7 @@ class App:
         self.events.put(("ask", (oversize, reply)))
         return reply.get()
 
-    def _work(self, photos, output_dir):
+    def _work(self, files, output_dir):
         try:
             self.events.put(("status", "Loading depth model..."))
             try:
@@ -274,16 +309,16 @@ class App:
             except Exception as error:
                 self.events.put(("error", (None, f"Could not load the depth model: {error}")))
                 return
-            for index, photo in enumerate(photos):
-                self.events.put(("status", f"Converting {photo.name} ({index + 1}/{len(photos)})"))
+            for index, path in enumerate(files):
+                self.events.put(("status", f"Converting {path.name} ({index + 1}/{len(files)})"))
                 self.events.put(("working", index))
                 try:
-                    info = self.converter.convert(photo, output_dir)
+                    info = self.converter.convert(path, output_dir)
                 except Exception as error:
-                    self.events.put(("error", (index, f"{photo.name}: {error}")))
+                    self.events.put(("error", (index, f"{path.name}: {error}")))
                     continue
                 if info is None:  # too large, and the user chose to skip it
-                    self.events.put(("skipped", (index, photo)))
+                    self.events.put(("skipped", (index, path)))
                     continue
                 self.events.put(("done", (index, info)))
         finally:
@@ -326,12 +361,9 @@ class App:
                 width, height = info["output_size"]
                 was = info["resized_from"]
                 note = f"  (resized from {was[0]}x{was[1]})" if was else ""
-                self._set_row(index, "done",
-                              f"{width}x{height} in {info['seconds']:.1f}s"
-                              + (" (resized)" if was else ""))
-                self.status.config(
-                    text=f"{info['output'].name}  -  {width}x{height}  "
-                         f"in {info['seconds']:.1f}s{note}")
+                detail = f"{width}x{height} in {info['seconds']:.1f}s" + (" (resized)" if was else "")
+                self._set_row(index, "done", detail)
+                self.status.config(text=f"{info['output'].name}  -  {detail}{note}")
                 self._show(info["output"])
             elif kind == "finished":
                 self.convert_button.state(["!disabled"])

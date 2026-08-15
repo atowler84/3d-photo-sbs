@@ -31,8 +31,15 @@ import torch
 from .depth import dtype_for
 
 BYTES_PER_PIXEL = 128
-# Activation elements the depth network holds per pixel of its own input.
-ACTIVATIONS = {"small": 160, "base": 290, "large": 480}
+# Activation elements Depth-Anything V2 holds per pixel of its own input.
+ACTIVATIONS = {"da2-small": 160, "da2-base": 290, "da2-large": 480}
+# Depth Anything 3 is priced differently, because it is shaped differently: a
+# large fixed cost -- the weights, which it keeps in fp32 so the metric output
+# stays precise -- plus a per-pixel one.  Fitted across 0.19-3.15 MP of network
+# input, where a purely per-pixel model would have been out by a factor of six at
+# the small end.
+DA3_FIXED = 2_000_000_000
+DA3_PER_PIXEL = 1200
 # What is left over absorbs fragmentation, the image encoder, and whatever else
 # the machine is busy with.
 HEADROOM = 0.85
@@ -95,12 +102,15 @@ def depth_cost(estimator, width, height, size="auto", device=None):
 
     `device` prices somewhere the model is not currently loaded, which is how
     the CPU can be asked what the GPU would make of a photo and the other way
-    round.  Only the dtype differs, and the working resolution is arithmetic on
-    the photo's shape, so neither needs the weights to be there.
+    round.  The working resolution is arithmetic on the photo's shape, so
+    neither needs the weights to be there.
     """
     working = estimator.working_size(height, width, size)
+    pixels = working[0] * working[1]
+    if estimator.name == "da3":
+        return DA3_FIXED + DA3_PER_PIXEL * pixels
     per_pixel = ACTIVATIONS.get(estimator.name, max(ACTIVATIONS.values()))
-    return per_pixel * working[0] * working[1] * dtype_for(device or estimator.device).itemsize
+    return per_pixel * pixels * dtype_for(device or estimator.device).itemsize
 
 
 def needs(estimator, width, height, size="auto", device=None):
@@ -134,8 +144,11 @@ def smaller_model(estimator, width, height, size="auto", device=None):
     room = free * HEADROOM
     working = estimator.working_size(height, width, size)
     cost = working[0] * working[1] * dtype_for(device).itemsize
-    order = [name for name in ("large", "base", "small") if name in ACTIVATIONS]
-    lighter = order[order.index(estimator.name) + 1:] if estimator.name in order else order
+    # Heaviest first, so the best that fits is the one found.  DA3 sits at the top
+    # and has nothing lighter of its own, so a machine that cannot hold it is
+    # offered the relative models instead -- worse geometry, but a conversion.
+    order = ["da3", "da2-large", "da2-base", "da2-small"]
+    lighter = order[order.index(estimator.name) + 1:] if estimator.name in order else order[1:]
     return next((name for name in lighter if ACTIVATIONS[name] * cost < room), None)
 
 

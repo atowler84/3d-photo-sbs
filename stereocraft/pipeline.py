@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from PIL import Image, ImageOps
 
 from . import budget, stereo
-from .depth import DepthEstimator
+from .depth import DepthEstimator, exif_focal
 
 pillow_heif.register_heif_opener()
 
@@ -21,10 +21,22 @@ SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", 
 
 @dataclass
 class Settings:
-    model: str = "large"
+    model: str = "da3"
     depth_size: object = "auto"
-    disparity: float = 2.0
-    convergence: float = 0.9
+    # How big the viewer is, and what they are looking at.  "auto" sizes both to
+    # the scene, which is what a stereographer does and what literal human eyes
+    # measurably do not: 65mm on a close-up asks for five times more separation
+    # than anyone can fuse, and on a telephoto shot asks for almost none.  A
+    # number here is taken literally -- 65.0 for real eyes, larger for a landscape.
+    # See `stereo.auto_geometry`.
+    eyes_mm: object = "auto"
+    focus_m: object = "auto"
+    # What "auto" aims for: near-to-far separation as a percentage of frame width.
+    target_pct: float = 2.0
+    # A ceiling on parallax, as a percentage of frame width.  Metric depth is
+    # honest about how close things get, and the geometry will cheerfully ask for
+    # more separation than anyone can fuse.
+    limit_pct: float = 3.0
     cross_eyed: bool = False
     max_size: int = 0
     quality: int = 95
@@ -43,7 +55,7 @@ class TooBig(Exception):
     `target` is the size to convert at instead, or None when no size would help.
     """
 
-    def __init__(self, path, source, target, device, wanted, free, disparity=Settings.disparity,
+    def __init__(self, path, source, target, device, wanted, free, limit=Settings.limit_pct,
                  alternative=None):
         self.path = Path(path)
         self.source = source
@@ -51,14 +63,18 @@ class TooBig(Exception):
         self.device = device
         self.wanted = wanted
         self.free = free
-        self.disparity = disparity
+        self.limit = limit
         self.alternative = alternative
         super().__init__(self.describe())
 
     def _sbs_width(self, width):
         """Width of the finished pair: two eyes, less the margin `make_pair`
-        trims off each end where one eye has no pixels to show."""
-        return 2 * (width - 2 * round(width * self.disparity / 200))
+        trims off each end where one eye has no pixels to show.
+
+        Priced at the comfort clamp, which is the most that trim can ever be, so
+        the figure quoted is the smallest the output could come out at.
+        """
+        return 2 * (width - 2 * stereo.max_margin(width, self.limit))
 
     @staticmethod
     def _mp(size):
@@ -240,8 +256,60 @@ class Converter:
         target, device = max(offers, key=lambda offer: _area(offer[0]))
         return TooBig(src, source, target, device,
                       budget.needs(estimator, *source, size, device),
-                      budget.free_bytes(device) or 0, self.settings.disparity,
+                      budget.free_bytes(device) or 0, self.settings.limit_pct,
                       None if target else budget.smaller_model(estimator, *source, size, device))
+
+    def geometry(self, inverse, width, focal):
+        """Eye separation in mm and screen plane in metres, for this scene.
+
+        Either can be pinned to a number, in which case it is taken at face value
+        and the other is still chosen to suit.
+        """
+        cfg = self.settings
+        eyes, focus = stereo.auto_geometry(inverse, width, focal, cfg.target_pct)
+        if cfg.eyes_mm != "auto":
+            eyes = float(cfg.eyes_mm)
+        if cfg.focus_m != "auto":
+            focus = float(cfg.focus_m)
+        return eyes, focus
+
+    def render(self, image, normalizer=None, margin=None, focal=None):
+        """One frame in; the two eye views and the depth map behind them out.
+
+        Composing is left to the caller because a video squeezes each eye to half
+        width first, and doing that after they are glued together would blend the
+        two across the seam.
+
+        `normalizer` replaces the per-image percentile stretch with something
+        that remembers the frames before this one, and `margin` pins the edge
+        trim so a clip cannot change size part-way through.  A still passes
+        neither and gets exactly what it always did.
+        """
+        cfg = self.settings
+        estimator = self.depth_model
+        width = image.shape[1]
+
+        depth = estimator(image, cfg.depth_size, focal)
+        rgb = (torch.from_numpy(np.ascontiguousarray(image)).to(estimator.device)
+               .permute(2, 0, 1).float().div_(255.0))
+        guide = rgb.mean(0)[None, None]
+
+        # Inverse depth is what gets interpolated, here and in the smoothing:
+        # 1/Z is linear across a slanted surface where Z itself is not.
+        small = depth.inverse if normalizer is None else normalizer(depth.inverse)
+        # Held to the range it came from.  A guided filter is free to overshoot at
+        # an edge, and an inverse depth that overshoots towards zero is a pixel
+        # claiming to be kilometres away -- which the disparity then takes
+        # literally.
+        inverse = stereo.guided_upsample(small, guide)[0, 0].clamp_(
+            float(small.min()), float(small.max()))
+
+        # The lens, restated in pixels at the width actually being rendered.
+        focal_full = depth.focal * width / depth.working[1]
+        eyes, focus = self.geometry(inverse, width, focal_full)
+        half = stereo.half_disparity(inverse, focal_full, eyes, focus, cfg.limit_pct, width)
+        left, right = stereo.make_pair(rgb, half, margin)
+        return left, right, inverse
 
     def _run(self, src, dst, size=None):
         cfg = self.settings
@@ -261,13 +329,10 @@ class Converter:
         image = load_image(src, size)
         height, width = image.shape[:2]
 
-        raw_depth = estimator(image, cfg.depth_size)
-
-        rgb = torch.from_numpy(np.ascontiguousarray(image)).to(device).permute(2, 0, 1).float().div_(255.0)
-        guide = rgb.mean(0)[None, None]
-        depth = stereo.guided_upsample(stereo.normalize(raw_depth), guide)[0, 0].clamp_(0, 1)
-
-        left, right = stereo.make_pair(rgb, depth, cfg.disparity, cfg.convergence)
+        # The photo's own lens, where it still remembers it.  Only the reading of
+        # the focus distance depends on this, not the shape of the depth -- see
+        # `depth.Depth`.
+        left, right, inverse = self.render(image, focal=exif_focal(src, width))
         sbs = stereo.compose(left, right, cfg.cross_eyed)
 
         if cfg.max_size and sbs.shape[2] > cfg.max_size:
@@ -277,7 +342,11 @@ class Converter:
 
         out = save_image(_to_uint8(sbs), output_path(src, dst, cfg.fmt), cfg.quality)
         if cfg.save_depth:
-            gray = (depth * 65535).round().to(torch.int32).cpu().numpy().astype(np.uint16)
+            # Centimetres, not a normalised grey ramp: the depth is in real units
+            # now, and a map you can measure off is worth more than a pretty one.
+            # 16 bits reaches 655m, which is past anything a photograph resolves.
+            centimetres = (100.0 / inverse.clamp_min(1e-6)).clamp(0, 65535)
+            gray = centimetres.round().to(torch.int32).cpu().numpy().astype(np.uint16)
             Image.fromarray(gray, mode="I;16").save(out.with_name(f"{Path(src).stem}_depth.png"))
 
         return {
@@ -291,5 +360,5 @@ class Converter:
 
 
 def convert(src, dst=None, **kwargs):
-    """One-shot helper for scripts: `stereocraft.convert("photo.jpg", disparity=2.5)`."""
+    """One-shot helper for scripts: `stereocraft.convert("photo.jpg", eyes_mm=70)`."""
     return Converter(Settings(**kwargs)).convert(src, dst)

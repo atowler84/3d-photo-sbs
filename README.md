@@ -2,29 +2,27 @@
 
 Turn a single photo into a **full-resolution side-by-side 3D image**.
 
-One job, done well: estimate a depth map, re-project the photo into a left and a
-right eye view, and write the pair as one image you can drop straight into a
+One job, done well: estimate a depth map, re-project the picture into a left and
+a right eye view, and write the pair as one frame you can drop straight into a
 headset or view free-eyed. Nothing is downscaled along the way.
 
 | Photo | Output | Time |
 | --- | --- | --- |
-| 1.9 MP | 3132 × 1197 | 0.3 s |
-| 27 MP | 11784 × 4500 | 1.8 s |
-| 60 MP | 18664 × 6336 | 4.1 s |
+| 1.9 MP | 3152 × 1197 | 0.5 s |
+| 7.1 MP | 6040 × 2304 | 1.2 s |
+| 12.5 MP | 6044 × 4080 | 1.4 s |
 
-Measured on an RTX 4080 Super with the model already loaded; add about two
+Measured on an RTX 4080 Super with the model already loaded; add about fifteen
 seconds for the first photo of a session. The GPU path falls back to the CPU
 automatically if a photo will not fit in video memory, and offers to resize a
 photo that will not fit there either -- see [when a photo is too
 big](#when-a-photo-is-too-big).
 
-There is a CPU path too, and it is a lot slower: the same three photos take
-20 s, 24 s and 34 s on an eight-core Ryzen 7 7800X3D. Most of that is a fixed
-cost rather than a per-pixel one, because the depth network always runs at a
-518-1036 px short side no matter how big the photo is, so a snapshot costs
-almost as much as a 60 MP raw. `--model base` brings those three down to 7 s,
-12 s and 20 s for slightly softer depth edges, which is the trade worth making
-on a machine without a GPU.
+There is a CPU path too and it is a great deal slower, because most of the cost
+is the depth network rather than the pixels: a snapshot costs nearly as much as
+a raw. On a machine without a GPU the lighter `--model da2-large` is the trade
+worth making, at some cost in geometry -- see [which
+model](#which-model).
 
 ```
 photo.jpg  ->  photo_sbs.jpg        (left | right, full width, no downscaling)
@@ -34,8 +32,14 @@ photo.jpg  ->  photo_sbs.jpg        (left | right, full width, no downscaling)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install -e . --no-deps && pip install -r requirements.txt
 ```
+
+The two steps are deliberate. Depth Anything 3's own dependency list replaces
+Torch with a different CUDA build and pulls in a reconstruction and visualisation
+stack — open3d, pycolmap, moviepy, flask, jupyter — that depth inference never
+touches. `requirements.txt` carries what it actually needs at runtime, which was
+worked out by blocking the rest and checking a photo still converted.
 
 The desktop window additionally needs Tkinter, which some Python builds omit:
 
@@ -96,6 +100,10 @@ the first run on a new machine pays again while the driver builds its kernel
 cache -- 14 s once, then 3 s at the start of each session, then a tenth of a
 second per photo.
 
+The spec has not been brought forward to Depth Anything 3 either. It still
+excludes OpenCV and torchvision, which the depth model now needs, so a packaged
+build will want both added and will grow accordingly.
+
 Windows has no way to know an unsigned exe, so the first run brings up a
 SmartScreen box -- More info, then Run anyway -- and only a signing certificate
 makes that go away.
@@ -114,8 +122,8 @@ stereocraft ~/Pictures/holiday --output ~/Pictures/3d
 stereocraft-gui
 ```
 
-The window keeps the depth model resident, so the first photo pays the two second
-load and the rest convert in well under a second each.
+The window keeps the depth model resident, so the first photo pays the load and
+the rest convert in well under a second each.
 
 ## When a photo is too big
 
@@ -158,40 +166,103 @@ The base depth model would fit, and costs little in quality (--model base).
 
 None of them, most of the time: press Convert.
 
-It is worth knowing why there is no "correct" setting to hunt for. A single photo
-carries no scale. The depth map says what is nearer than what, never how far away
-anything is in metres, so no combination of settings reconstructs the real
-geometry of the scene. What you are choosing is how much depth to portray, and
-the defaults are picked to look natural and stay comfortable over a long look.
+It used to be worth explaining why there was no correct setting to hunt for. A
+photo carries no scale, the argument went, so the depth map says only what is
+nearer than what and no combination of settings could reconstruct the real
+geometry. That is no longer true, and the whole of this section is different
+because of it.
 
-Two things are genuinely a matter of taste, and they are the only two the window
-puts in front of you:
+The depth model measures in **metres**. So the renderer does not approximate
+the separation between your eyes -- it works it out. Two eyes a real distance
+apart, both looking at a screen a real distance away, see a point at distance Z
+separated by
 
-- **Depth strength** (`--disparity`) - how far apart your two virtual eyes are.
-  Past about 3% the scene starts reading as flat cards at different distances,
-  and it gets tiring to look at.
-- **Screen plane** (`--convergence`) - which depth sits at the window. At the
-  default only your nearest subject comes forward and the rest of the scene sits
-  behind the frame, which is the restful arrangement. Lower it to push everything
-  further back.
+```
+d = f · B · (1/Z − 1/Zc)
+```
 
-Everything else the window decides for you: always the largest depth model, always
-the best working resolution for the photo you gave it. The command line keeps
-`--model` and `--depth-size` for scripting and slow machines, but there is no
-quality reason to touch them.
+and that is what gets rendered. Things at the focus distance sit in the screen,
+nearer things come out of it, and everything beyond recedes towards a **finite**
+separation rather than being stretched out by however the depth map happened to
+be scaled. That finite limit is the difference between geometry and a good guess,
+and it is what makes a distant background sit properly behind the frame instead
+of pulling apart.
+
+### What auto does, and why it is not just the human number
+
+The two settings are the eye separation and the focus distance, and by default
+both are chosen per photo. It is worth knowing why, because "just use 65mm, the
+human number" is the obvious answer and it is measurably wrong:
+
+| Scene | Separation a real 65mm pair would need |
+| --- | --- |
+| a close-up 0.2–1.0 m away | 15.8% of frame width |
+| a car 1.9–24.8 m away | 2.4% |
+| a telephoto shot 19.4–22.5 m away | 0.3% |
+
+Around 2% is comfortable. So literal eyes render a close-up no one can fuse and
+a telephoto shot that is nearly flat. Both are *correct* -- that really is what
+someone standing at the camera would see -- but you are not standing at the
+camera, you are looking at a screen.
+
+So the separation is chosen to suit the scene, which is what a stereographer
+does rather than a fudge: a wider baseline than human for a distant landscape, a
+narrower one for a close-up. On the nine photos above it picks 9mm for a macro,
+56mm for a car at conversational distance, and 618mm for the telephoto shot, and
+lands every one of them between 1.3% and 2.0%.
+
+What matters is that only the amplitude moves. The *shape* stays exactly what
+the metric geometry says -- parallax falling off as 1/Z, distant things
+converging -- and that shape is the whole gain. Scaling it is a choice about how
+big you want to feel, not an approximation.
+
+- **Eye separation** (`--eyes`) — millimetres. `auto`, or a number: 65 for real
+  human eyes, more for a landscape you want depth out of, less for a close-up.
+- **Focus distance** (`--focus`) — metres. `auto`, or the distance you want
+  sitting in the plane of the screen.
+- **Target** (`--target`) — what `auto` aims for, as a percentage of frame width.
+  The one to reach for if the whole thing is too strong or too flat: it keeps the
+  geometry and changes only how much of it there is.
+
+### Which model
+
+`--model da3` is Depth Anything 3, and it is the only one that measures in
+metres. `da2-large`, `da2-base` and `da2-small` are Depth-Anything V2, kept as a
+fallback: they rank depth without measuring it, so their output is stretched onto
+an assumed 1–50 m range and the geometry that comes out is approximate. Worth
+reaching for if DA3 makes a mess of a particular photo, which does happen -- DA3's
+own 1.4B variant was tested for this app and rejected because it falls apart on
+portraits.
+
+They are close on depth quality. On two test photos the edge-alignment scores
+were 0.284 against 0.284 and 0.129 against 0.136 -- a wash. The reason to prefer
+DA3 is the metres, not a sharper map.
+
+### Where the metres come from
+
+The conversion needs the lens. It is taken from the photo's EXIF where that
+survives, and otherwise assumed to be a 28mm-equivalent, which is what most
+phones point at the world.
+
+Getting it wrong matters less than it sounds. A wrong focal length scales the
+whole scene by the same factor, and `auto` then picks a baseline that cancels it
+-- so the picture is unchanged and only the metre readings are off. It is worth
+knowing before trusting a `--save-depth` map as a measurement.
 
 ## Options
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `-d`, `--disparity` | `2.0` | Eye separation as a percentage of image width. 1.5–3 is comfortable; past 4 the depth reads as a cardboard cut-out. |
-| `-c`, `--convergence` | `0.9` | Which depth sits on the screen plane, 0 (far) to 1 (near). The default parks almost everything behind the screen with only the nearest subject popping forward, which is the easy-on-the-eyes choice. |
-| `-m`, `--model` | `large` | Depth-Anything V2 size: `small` (95 MB), `base` (372 MB), `large` (1.3 GB). Only worth lowering on a slow machine. |
-| `--depth-size` | `auto` | Shorter side fed to the depth network. `auto` follows the photo between 518 and 1036 px — big photos get the finer structure, small ones do not pay for detail that is not there. Pin a number to override. |
+| `-e`, `--eyes` | `auto` | Distance between the two eyes, in millimetres, or `auto` to size it to the scene. 65 is the human average; a landscape wants far more and a close-up far less. |
+| `-f`, `--focus` | `auto` | How far away the screen plane sits, in metres, or `auto`. Whatever is at this distance sits in the screen; nearer comes out, further recedes. |
+| `-t`, `--target` | `2.0` | What `auto` aims for: near-to-far separation as a percentage of frame width. The knob to reach for when the effect is too strong or too flat. |
+| `--limit` | `3.0` | Ceiling on separation, as a percentage of frame width, so something very close cannot demand more parallax than an eye can fuse. |
+| `-m`, `--model` | `da3` | `da3` measures depth in metres. `da2-large`, `da2-base`, `da2-small` only rank it and are fitted onto an assumed range — a fallback, see [which model](#which-model). |
+| `--depth-size` | `auto` | Longest side fed to the depth network (shortest, for the `da2` models). `auto` follows the photo up to 2048 px; bigger gives cleaner subject silhouettes, which is what the warp cares about. |
 | `--cross` | off | Write right\|left for cross-eyed viewing instead of left\|right. Not a quality setting: it only matters when free-viewing on a monitor. |
 | `--max-size` | `0` | Cap the output width. Native by default; useful if a viewer chokes on very wide images. |
 | `--format`, `-q` | `auto`, `95` | Output container and JPEG quality. |
-| `--save-depth` | off | Also write a 16-bit `_depth.png`. |
+| `--save-depth` | off | Also write a 16-bit `_depth.png`, in centimetres — a map you can measure off rather than a grey ramp. Read [where the metres come from](#where-the-metres-come-from) before trusting it. |
 | `--device` | `auto` | `cuda`, `mps` or `cpu`. |
 | `--oversize` | `ask` | A photo too big for memory: `ask` what to do, `skip` it, or `resize` it to the largest size that fits. |
 
@@ -199,27 +270,30 @@ As a library:
 
 ```python
 import stereocraft
-stereocraft.convert("photo.jpg", disparity=2.5)
+stereocraft.convert("photo.jpg", eyes_mm=65, focus_m=3)
 ```
 
 ## How it works
 
-1. **Depth** — Depth-Anything V2 predicts relative inverse depth, which is
-   already proportional to stereo disparity, so it maps onto eye separation
-   directly. Depth is normalised on the 2nd/98th percentiles so a blown-out sky
-   or a speck of flare cannot squash the range.
+1. **Depth** — Depth Anything 3 predicts depth in metres, converted to inverse
+   depth (1/Z) because that is the quantity that behaves: it varies linearly
+   across a slanted surface where depth itself does not, so the upsample below
+   interpolates it correctly, and it is what the disparity formula wants anyway.
 2. **Edge alignment** — the network runs at its own resolution and the result is
    lifted to full resolution with a guided filter that uses the photo as the
    guide. Depth edges land on picture edges instead of the soft ramps plain
    interpolation leaves, and that is what keeps silhouettes clean in the warp.
-3. **Rendering** — each pixel is splatted into the column its disparity puts it
+3. **Geometry** — two eyes are placed a real distance apart, aimed at a real
+   focus distance, and each pixel's separation comes out as `f·B·(1/Z − 1/Zc)`.
+   Both distances are chosen to suit the scene unless you pin them.
+4. **Rendering** — each pixel is splatted into the column its disparity puts it
    in, with a z-buffer so nearer surfaces occlude, then resampled backwards with
    bilinear weights to recover sub-pixel detail.
-4. **Disocclusions** — a small baseline only uncovers a few pixels of hidden
+5. **Disocclusions** — a small baseline only uncovers a few pixels of hidden
    background per edge. Those gaps are filled from whichever side is further
    away, with the background stretched gently across so there is no flat smear
    and no ghost of the foreground edge.
-5. **Framing** — both eyes shift content sideways, leaving a sliver at the frame
+6. **Framing** — both eyes shift content sideways, leaving a sliver at the frame
    edge no real pixel reaches. It is trimmed rather than invented, costing about
    1% of the width.
 
@@ -229,8 +303,8 @@ the 768px ceiling a mesh pipeline imposes.
 
 ## Viewing
 
-The output is full-width SBS (each eye keeps its own full width, so the file is
-twice as wide as the source). Quest, Pico and Vision Pro read it directly through
+The output is full-width SBS: each eye keeps its own full width, so the file is
+twice as wide as the source. Quest, Pico and Vision Pro read it directly through
 any local media viewer; on a desktop, free-viewing works with the parallel
 method, or use `--cross` and cross your eyes.
 

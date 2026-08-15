@@ -1,8 +1,15 @@
 """Depth-image-based rendering: one photo + one depth map -> a stereo pair.
 
-The baseline for a 3D photo is tiny (a couple of percent of the frame width), so
-the regions each eye uncovers are only a few pixels wide.  That makes a full
-layered-depth-image reconstruction unnecessary: a z-buffered forward splat of the
+The depth map arrives in metres, so the separation between the eyes is not a
+number to be tuned but one to be worked out: `half_disparity` places two eyes a
+real distance apart, points them at a real focus distance, and computes the
+parallax that geometry gives.  What the settings choose is where the viewer is
+standing, not how much depth to draw.
+
+Human eyes are about 65mm apart and the world is metres away, so the separation
+that falls out is a couple of percent of the frame -- which makes the regions
+each eye uncovers only a few pixels wide.  That is what lets the render skip a
+full layered-depth-image reconstruction: a z-buffered forward splat of the
 disparity followed by a sub-pixel backward resample gives the same geometry at
 native photo resolution, in milliseconds instead of minutes.
 """
@@ -53,16 +60,31 @@ def guided_upsample(depth, guide, radius=4, eps=1e-3):
     return a * guide + b
 
 
-def normalize(depth, low=2.0, high=98.0):
-    """Map raw relative depth onto [0, 1] using percentiles, so a few stray
-    pixels (a blown-out sky, a speck of lens flare) cannot squash the range."""
+def percentiles(depth, low=2.0, high=98.0):
+    """The raw depth values the `low`th and `high`th percentiles sit at.
+
+    Kept apart from applying them because a video wants to smooth the pair over
+    time before using it: re-derived from scratch every frame, the range twitches
+    as the scene moves and drags the whole depth map with it.
+    """
     flat = depth.flatten()
     if flat.numel() > 1 << 20:  # torch.quantile has an input-size ceiling
         flat = flat[:: flat.numel() // (1 << 20) + 1]
     lo, hi = torch.quantile(flat.float(), torch.tensor([low / 100, high / 100], device=flat.device))
+    return lo, hi
+
+
+def apply_range(depth, lo, hi):
+    """Map `[lo, hi]` onto [0, 1], with everything outside it clamped."""
     if hi - lo < 1e-6:
         return torch.zeros_like(depth)
     return ((depth - lo) / (hi - lo)).clamp_(0, 1)
+
+
+def normalize(depth, low=2.0, high=98.0):
+    """Map raw relative depth onto [0, 1] using percentiles, so a few stray
+    pixels (a blown-out sky, a speck of lens flare) cannot squash the range."""
+    return apply_range(depth, *percentiles(depth, low, high))
 
 
 def _sample_columns(image, x):
@@ -152,24 +174,100 @@ def _render_band(image, half, sign):
     return torch.where(valid[None], out, stretched)
 
 
-def make_pair(image, depth, disparity=2.0, convergence=0.9):
-    """Turn one image into a left/right pair.
+def max_margin(width, limit=3.0):
+    """The widest trim the comfort clamp can ever call for, at this width.
 
-    `image` is a float [3,H,W] tensor in [0,1], `depth` a [H,W] tensor in [0,1]
-    where 1 is nearest.  `disparity` is the total near-to-far separation as a
-    percentage of image width, and `convergence` picks the depth that sits on the
-    screen plane -- everything nearer pops out, everything further recedes.
+    A still is trimmed by whatever its own disparity turned out to need.  A clip
+    cannot be: frames trimmed by different amounts come out different sizes, and
+    no encoder will take that.  The clamp puts a hard ceiling on disparity, so
+    that ceiling is a margin every frame of a clip can share.
     """
-    _, _, width = image.shape
-    span = disparity / 100.0 * width
-    half = (span * (depth - convergence) / 2.0).to(image.dtype)
+    return min(int(math.ceil(limit / 100.0 * width / 2.0)), (width - 1) // 2)
+
+
+def half_disparity(inverse, focal, eyes_mm=65.0, focus_m=3.0, limit=3.0, width=None):
+    """Half the separation between the eyes, in pixels, for every pixel.
+
+    This is the whole of the geometry.  Two eyes `eyes_mm` apart, both looking at
+    a screen placed `focus_m` away, see a point at distance Z separated by
+
+        d = f * B * (1/Z - 1/Zc)
+
+    -- the shifted-sensor arrangement, which is the one that does not introduce
+    the vertical parallax a toed-in pair would.  Points at the focus distance land
+    on the screen with no separation at all, nearer ones come forward, and
+    everything beyond it recedes towards a *finite* limit of `f * B / Zc` rather
+    than being stretched out by however the depth map happened to be scaled.
+    That finite limit is the difference between this and guessing.
+
+    `focal` is in pixels at the width being rendered, and `inverse` is in
+    1/metres, which is what the depth backends hand over.
+
+    The clamp exists because metric depth is honest about how close things get: a
+    hand held out at 300 mm really does subtend a parallax no one can fuse, and
+    the physics will happily say so.  `limit` caps it as a percentage of frame
+    width, which is the units comfort is usually discussed in.
+    """
+    half = focal * (eyes_mm / 1000.0) * (inverse - 1.0 / focus_m) / 2.0
+    if width:
+        cap = limit / 100.0 * width / 2.0
+        half = half.clamp(-cap, cap)
+    return half
+
+
+def auto_geometry(inverse, width, focal, target=2.0, forward=0.12):
+    """Choose the eye separation and screen plane to suit this scene.
+
+    Physically literal eyes are the wrong default, and measuring said so: 65mm
+    at a subject 300mm away asks for 16% of the frame width, five times past what
+    anyone can fuse, while the same eyes on a 20m telephoto shot ask for 0.3% and
+    render something almost flat.  Both are *correct* -- that really is what a
+    person standing at the camera would see -- but the person is not standing at
+    the camera, they are looking at a screen.
+
+    So the separation is chosen per scene, which is what a stereographer does
+    rather than a mistake to apologise for: a wider baseline than human for a
+    distant landscape, a narrower one for a close-up.  What matters is that only
+    the two free parameters move.  The *shape* of the depth stays exactly what
+    the metric geometry says -- parallax falling off as 1/Z, distant things
+    converging to a finite separation -- and that shape is the whole realism
+    gain.  Scaling it is a choice about how big the viewer should feel, not an
+    approximation of the geometry.
+
+    `target` is the near-to-far separation to aim for as a percentage of frame
+    width, and `forward` the share of the picture left in front of the window.
+    """
+    flat = inverse.flatten().float()
+    if flat.numel() > 1 << 20:  # torch.quantile has an input-size ceiling
+        flat = flat[:: flat.numel() // (1 << 20) + 1]
+    # Percentiles, not the extremes, so one stray pixel cannot set the baseline.
+    far, near, focus = torch.quantile(flat, torch.tensor([0.02, 0.98, 1.0 - forward],
+                                                         device=flat.device))
+    span = float(near - far)
+    if span < 1e-9:  # a scene at one distance has no stereo to give
+        return 0.0, max(float(1.0 / focus.clamp_min(1e-6)), 0.1)
+    eyes_mm = 1000.0 * (target / 100.0 * width) / (focal * span)
+    return eyes_mm, max(float(1.0 / focus.clamp_min(1e-6)), 0.05)
+
+
+def make_pair(image, half, margin=None):
+    """Turn one image and its disparity field into a left/right pair.
+
+    `image` is a float [3,H,W] tensor in [0,1]; `half` is the signed
+    half-disparity in pixels from `half_disparity`, positive towards the viewer.
+    `margin` overrides how much is trimmed off each end, for a caller that needs
+    every frame the same size; see `max_margin`.
+    """
+    width = image.shape[2]
+    half = half.to(image.dtype)
 
     left = _render_eye(image, half, +1)
     right = _render_eye(image, half, -1)
 
     # Both eyes shift content sideways, leaving a sliver at the frame edge that no
     # real pixel reaches.  Trimming it beats filling it, and costs ~1% of width.
-    margin = min(int(math.ceil(float(half.abs().max()))), (width - 1) // 2)
+    if margin is None:
+        margin = min(int(math.ceil(float(half.abs().max()))), (width - 1) // 2)
     if margin > 0:
         left = left[:, :, margin:-margin]
         right = right[:, :, margin:-margin]
