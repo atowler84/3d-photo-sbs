@@ -106,12 +106,10 @@ CUDA, most of it the environment being frozen. All of it is disposable
 afterwards except `StereoCraft-build\models` and `StereoCraft-build\ffmpeg`,
 worth keeping so that a rebuild does not fetch them all over again.
 
-Depth Anything 3 made the folder noticeably bigger than it was: OpenCV,
-torchvision, scipy and pandas all have to come along now, on top of the 1.3 GB
-of weights. The figures that used to be quoted here -- 1.9 GB for CPU, 5.4 GB
-for CUDA -- are no longer right, and I have not measured the Windows ones since,
-because the build only runs there. An equivalent Linux freeze came to 8.2 GB
-with CUDA Torch, which is the right order to expect.
+Depth Anything 3 made the folder bigger: OpenCV, torchvision, scipy and pandas
+all have to come along now, on top of the 1.3 GB of weights. A CUDA build
+measures 5.8 GB, against 5.4 GB before. The CPU one has not been rebuilt since
+and its old figure of 1.9 GB will be low.
 
 The first photo of a session pays for loading the model, and on CUDA the first
 run on a new machine pays again while the driver builds its kernel cache.
