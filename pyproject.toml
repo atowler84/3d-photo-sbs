@@ -18,14 +18,17 @@ dependencies = [
     # Installed without its own dependency list: the full set replaces torch with
     # a different CUDA build, and pulls in a reconstruction and visualisation
     # stack -- open3d, pycolmap, moviepy, flask -- that depth inference never
-    # touches.  What it actually needs at runtime is the handful below, which was
-    # established by blocking the rest and converting a photo.
+    # touches.  What it actually needs at runtime is the handful below, each one
+    # checked by blocking its import and converting a photo.  `evo` brings scipy
+    # and pandas with it, which is why neither is listed and neither can be left
+    # out of a frozen build.
     "depth-anything-3",
     "einops",
     "addict",
     "omegaconf",
     "tqdm",
     "evo",
+    "imageio",
     "pillow>=10.0",
     "pillow-heif>=0.16",
     "numpy>=1.24,<2",  # pinned by depth-anything-3

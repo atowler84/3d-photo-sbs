@@ -11,12 +11,17 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))
 
-from stereocraft.depth import MODELS  # noqa: E402
+from stereocraft.depth import DA3_MODEL, MODELS  # noqa: E402
+
+# Every checkpoint the build can ship, under the folder name the app looks for:
+# `depth.checkpoint` resolves `models/<name>` beside the exe, and a plain folder
+# is something `from_pretrained` reads without touching the network at all.
+REPOS = {"da3": DA3_MODEL, **MODELS}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("models", nargs="+", choices=sorted(MODELS))
+    parser.add_argument("models", nargs="+", choices=sorted(REPOS))
     parser.add_argument("-o", "--output", required=True, help="folder to fill with <model>/")
     args = parser.parse_args(argv)
 
@@ -26,9 +31,9 @@ def main(argv=None):
 
     for name in args.models:
         target = os.path.join(args.output, name)
-        print(f"fetching {MODELS[name]} -> {target}")
+        print(f"fetching {REPOS[name]} -> {target}")
         snapshot_download(
-            MODELS[name],
+            REPOS[name],
             local_dir=target,
             # The repos carry the same weights twice, as .bin and .safetensors;
             # only one of them is wanted, and it is the one that loads faster.

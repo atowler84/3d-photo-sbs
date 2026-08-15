@@ -16,6 +16,14 @@ def main():
     # spawning one has to be told it is already inside the app.
     multiprocessing.freeze_support()
 
+    # Depth Anything 3 puts @torch.jit.script on one small matrix helper, and
+    # TorchScript compiles from *source* -- which a frozen app does not have,
+    # having shipped .pyc instead.  Turning the JIT off makes the decorator a
+    # no-op and the function run as ordinary Python, which for a 4x4 inverse
+    # costs nothing.  It has to happen before Torch is imported, which is why it
+    # is here and not somewhere more obvious.
+    os.environ.setdefault("PYTORCH_JIT", "0")
+
     # The windowed exe has no console attached, which leaves stdout and stderr
     # as None.  The odd progress line written to either is worth losing, but
     # not worth an AttributeError taking the window down with it.

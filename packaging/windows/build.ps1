@@ -13,9 +13,9 @@
     powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -Cuda
 
 .NOTES
-    Wants about 4 GB of free space to work in, or 12 GB with -Cuda.  Everything
-    it leaves behind can go afterwards except <Work>\models, which saves the
-    next build a 1.3 GB download.
+    Wants about 5 GB of free space to work in, or 13 GB with -Cuda.  Everything
+    it leaves behind can go afterwards except <Work>\models and <Work>\ffmpeg,
+    which save the next build a 1.3 GB download and a small one.
 #>
 [CmdletBinding()]
 param(
@@ -24,8 +24,13 @@ param(
     # one that ever has to exist.
     [string]$Python = "",
     [string]$Work = "$env:USERPROFILE\StereoCraft-build",
-    [ValidateSet("small", "base", "large")]
-    [string[]]$Models = @("large"),
+    # da3 measures depth in metres and is what the app uses by default; the da2
+    # models only rank it, and ride along as a fallback.
+    [ValidateSet("da3", "da2-small", "da2-base", "da2-large")]
+    [string[]]$Models = @("da3"),
+    # Video needs ffmpeg.  It is fetched and laid beside the exe unless told not
+    # to, in which case a copy has to be on the machine the app runs on.
+    [switch]$SkipFfmpeg,
     [switch]$Cuda,
     # Which CUDA build of Torch to take when -Cuda is given.  cu126 by default:
     # it runs on any driver from 525 up, where cu130 wants 580 or newer.
@@ -91,7 +96,37 @@ Invoke-Tool $vpy @("-m", "pip", "install", "--upgrade", "--quiet", "pip", "wheel
 # runtime, which is gigabytes of no use to a machine without an NVIDIA card.
 if (-not $TorchIndex) { $TorchIndex = if ($Cuda) { "cu126" } else { "cpu" } }
 Invoke-Tool $vpy @("-m", "pip", "install", "--index-url", "https://download.pytorch.org/whl/$TorchIndex", "torch")
-Invoke-Tool $vpy @("-m", "pip", "install", "-r", (Join-Path $stage "requirements.txt"), "pyinstaller")
+# Depth Anything 3 is installed without its own dependency list, which pins a
+# different Torch and would quietly replace the one just installed above, along
+# with pulling in a reconstruction and visualisation stack the app never calls.
+# requirements.txt carries what it actually needs; --no-deps keeps it to that.
+$requirements = Get-Content (Join-Path $stage "requirements.txt") |
+    Where-Object { $_ -and $_ -notmatch "^\s*#" -and $_ -notmatch "^torch\b" }
+Invoke-Tool $vpy (@("-m", "pip", "install") + $requirements + @("pyinstaller"))
+Invoke-Tool $vpy @("-m", "pip", "install", "--no-deps", "depth-anything-3")
+
+# --- ffmpeg, for video -----------------------------------------------------
+# A build-time download rather than something the user has to install: the whole
+# promise of this folder is that it runs on a machine with nothing on it.
+$ffmpegDir = Join-Path $stage "packaging\windows\ffmpeg"
+if (-not $SkipFfmpeg) {
+    $ffmpegCache = Join-Path $Work "ffmpeg"
+    if (-not (Test-Path (Join-Path $ffmpegCache "ffmpeg.exe"))) {
+        $archive = Join-Path $Work "ffmpeg.zip"
+        Write-Host "`nFetching ffmpeg ..." -ForegroundColor DarkCyan
+        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
+            -OutFile $archive -UseBasicParsing
+        $unpacked = Join-Path $Work "ffmpeg-unpacked"
+        if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
+        Expand-Archive -Path $archive -DestinationPath $unpacked -Force
+        New-Item -ItemType Directory -Path $ffmpegCache -Force | Out-Null
+        Get-ChildItem $unpacked -Recurse -Include "ffmpeg.exe", "ffprobe.exe" |
+            ForEach-Object { Copy-Item $_.FullName -Destination $ffmpegCache -Force }
+        Remove-Item $archive, $unpacked -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $ffmpegDir -Force | Out-Null
+    Copy-Item (Join-Path $ffmpegCache "*.exe") -Destination $ffmpegDir -Force
+}
 
 # --- weights ---------------------------------------------------------------
 $weights = Join-Path $Work "models"
@@ -118,14 +153,15 @@ foreach ($model in $Models) {
 Copy-Item (Join-Path $root "README.md") -Destination $app -Force
 Copy-Item (Join-Path $root "LICENSE") -Destination $app -Force
 Set-Content -Path (Join-Path $app "Read me first.txt") -Encoding UTF8 -Value @"
-StereoCraft $version -- side-by-side 3D photos
+StereoCraft $version -- side-by-side 3D photos and video
 
 Double-click StereoCraft.exe.  Nothing to install: the whole app is this folder, so
 it can live on a USB stick or anywhere else you like, as long as it stays
 together.  StereoCraft-cli.exe is the same program for the command line -- run it
 from a terminal with --help to see what it takes.
 
-This is the $flavour build. $(if ($Cuda) { "It uses an NVIDIA card when there is one, and falls back to the processor." } else { "It runs on the processor, so a large photo takes a little while." })
+This is the $flavour build. $(if ($Cuda) { "It uses an NVIDIA card when there is one, and falls back to the processor." } else { "It runs on the processor, so a large photo takes a little while and video is slow going." })
+$(if ($SkipFfmpeg) { "Built without ffmpeg, so video needs ffmpeg installed on this machine, or ffmpeg.exe and ffprobe.exe dropped into this folder." } else { "ffmpeg is in this folder, so video works with nothing else installed." })
 "@
 
 $size = "{0:N0} MB" -f ((Get-ChildItem $app -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)

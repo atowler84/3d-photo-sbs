@@ -34,14 +34,17 @@ clip.mp4   ->  clip_sbs.mp4         (left | right, half width per eye, sound kep
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e . --no-deps && pip install -r requirements.txt
+pip install -r requirements.txt
+pip install --no-deps depth-anything-3
+pip install -e . --no-deps
 ```
 
-The two steps are deliberate. Depth Anything 3's own dependency list replaces
-Torch with a different CUDA build and pulls in a reconstruction and visualisation
-stack — open3d, pycolmap, moviepy, flask, jupyter — that depth inference never
-touches. `requirements.txt` carries what it actually needs at runtime, which was
-worked out by blocking the rest and checking a photo still converted.
+The `--no-deps` on the third line matters. Depth Anything 3's own dependency list
+replaces Torch with a different CUDA build and pulls in a reconstruction and
+visualisation stack — open3d, pycolmap, moviepy, flask, jupyter — that depth
+inference never touches. `requirements.txt` carries what it actually reaches for
+at runtime instead, each entry checked by blocking its import and converting a
+photo.
 
 The desktop window additionally needs Tkinter, which some Python builds omit:
 
@@ -78,13 +81,15 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 It leaves a zip in `%USERPROFILE%\StereoCraft-build`. Unzip it anywhere -- a USB
 stick is fine -- and double-click `StereoCraft.exe` for the window, or run
 `StereoCraft-cli.exe --help` for the command line. Nothing is installed and
-nothing is downloaded on first run: the weights ship in `models\large` beside
-the exe, so it works on a machine that has never seen the internet.
+nothing is downloaded on first run: the weights ship in `models\da3` beside the
+exe and ffmpeg sits next to it, so both photos and video work on a machine that
+has never seen the internet.
 
 | switch | |
 | --- | --- |
 | `-Cuda` | build against CUDA Torch: about three times the size, and the difference between 20 seconds a photo and a tenth of one |
-| `-Models small,base,large` | which checkpoints to ship; `large` alone by default |
+| `-Models da3,da2-large` | which checkpoints to ship; `da3` alone by default |
+| `-SkipFfmpeg` | leave ffmpeg out, and with it video on a machine that has none |
 | `-Work <dir>` | where to build, `%USERPROFILE%\StereoCraft-build` by default |
 | `-SkipZip` | leave the folder without packing it |
 | `-Python <path>` | which `python.exe` to build with; found on its own otherwise |
@@ -94,30 +99,26 @@ With `-SkipZip` the app is left in `dist-<flavour>\StereoCraft` under the build
 folder, ready to copy wherever it is going to live. Move it somewhere of its own
 before building again, because the next build overwrites that folder.
 
-A build wants room to work in -- roughly 4 GB for the CPU one and 12 GB for
+A build wants room to work in -- roughly 5 GB for the CPU one and 13 GB for
 CUDA, most of it the environment being frozen. All of it is disposable
-afterwards except `StereoCraft-build\models`, which is worth keeping so that a
-rebuild does not fetch the weights all over again.
+afterwards except `StereoCraft-build\models` and `StereoCraft-build\ffmpeg`,
+worth keeping so that a rebuild does not fetch them all over again.
 
-The CPU folder comes to about 1.9 GB -- nearly three quarters of it the large
-model's weights -- and zips to 1.5 GB, since neither weights nor DLLs compress.
-`-Models small` trades a little depth quality for a 700 MB app. `-Cuda` builds
-5.4 GB instead, almost all of it CUDA kernels, and is worth every byte on a
-machine with the card to use them: 0.1 s a photo against 21.8 s.
+Depth Anything 3 made the folder noticeably bigger than it was: OpenCV,
+torchvision, scipy and pandas all have to come along now, on top of the 1.3 GB
+of weights. The figures that used to be quoted here -- 1.9 GB for CPU, 5.4 GB
+for CUDA -- are no longer right, and I have not measured the Windows ones since,
+because the build only runs there. An equivalent Linux freeze came to 8.2 GB
+with CUDA Torch, which is the right order to expect.
 
-Either way the first photo of a session pays for loading the model, and on CUDA
-the first run on a new machine pays again while the driver builds its kernel
-cache -- 14 s once, then 3 s at the start of each session, then a tenth of a
-second per photo.
+The first photo of a session pays for loading the model, and on CUDA the first
+run on a new machine pays again while the driver builds its kernel cache.
 
-The build does not yet carry ffmpeg, so video on a packaged copy needs ffmpeg
-installed on the machine, or `ffmpeg.exe` and `ffprobe.exe` dropped into the
-folder beside `StereoCraft.exe`, where they are picked up automatically. Photos
-need nothing.
-
-The spec has not been brought forward to Depth Anything 3 either. It still
-excludes OpenCV and torchvision, which the depth model now needs, so a packaged
-build will want both added and will grow accordingly.
+One thing worth knowing about the frozen app: it runs with TorchScript turned
+off. Depth Anything 3 puts `@torch.jit.script` on one small matrix helper, and
+TorchScript compiles from source, which a frozen app does not carry -- so the
+launcher disables the JIT before Torch is imported. The function then runs as
+ordinary Python, which for a 4x4 inverse costs nothing measurable.
 
 Windows has no way to know an unsigned exe, so the first run brings up a
 SmartScreen box -- More info, then Run anyway -- and only a signing certificate
@@ -453,13 +454,14 @@ that guesses wrong has a setting for it.
 MIT, see [LICENSE](LICENSE).
 
 The depth weights are downloaded at runtime rather than shipped here, and carry
-their own terms: Depth-Anything V2 Small is Apache-2.0, while Base and Large —
-Large being the default — are CC BY-NC 4.0, so they are not licensed for
+their own terms. The default is now the permissive one, which it did not use to
+be: **DA3METRIC-LARGE is Apache-2.0**, as is Depth-Anything V2 Small. Only the
+V2 Base and Large fallbacks are CC BY-NC 4.0, and those are not licensed for
 commercial use.
 
-That is worth a thought before handing the Windows build to anyone, since it
-carries the weights inside it: a default build is not one to sell, and
-`-Models small` makes an Apache-2.0 one that is.
+So a default Windows build ships nothing that stops you selling it, where before
+this it did. Adding `-Models da2-large` puts a non-commercial checkpoint back in
+the folder.
 
 This repository began as a fork of
 [3D-Photo-Inpainting](https://github.com/vt-vl-lab/3d-photo-inpainting) by way of

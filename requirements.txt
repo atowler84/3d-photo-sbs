@@ -1,12 +1,21 @@
+# Everything except Depth Anything 3 itself, which has to go in separately:
+#
+#   pip install -r requirements.txt
+#   pip install --no-deps depth-anything-3
+#
+# Its own dependency list pins a different Torch and pulls in a reconstruction
+# and visualisation stack the app never calls, so it is installed without one.
+# Everything it actually reaches for at runtime is below, each checked by
+# blocking the import and converting a photo.  evo brings scipy and pandas.
 torch>=2.1
 torchvision
 transformers>=4.41
-depth-anything-3
 einops
 addict
 omegaconf
 tqdm
 evo
+imageio
 opencv-python
 pillow>=10.0
 pillow-heif>=0.16
