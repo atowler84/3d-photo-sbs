@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build the portable Windows app: one folder holding sbs3d.exe, the Python
+    Build the portable Windows app: one folder holding StereoCraft.exe, the Python
     runtime it needs and the depth model's weights.  No installer, no Python on
     the machine it runs on.
 
@@ -23,7 +23,7 @@ param(
     # wheels for.  The build's Python is the app's Python, so this is the only
     # one that ever has to exist.
     [string]$Python = "",
-    [string]$Work = "$env:USERPROFILE\sbs3d-build",
+    [string]$Work = "$env:USERPROFILE\StereoCraft-build",
     [ValidateSet("small", "base", "large")]
     [string[]]$Models = @("large"),
     [switch]$Cuda,
@@ -65,9 +65,9 @@ $stage = Join-Path $Work "src"
 $venv = Join-Path $Work "venv-$flavour"
 $vpy = Join-Path $venv "Scripts\python.exe"
 $dist = Join-Path $Work "dist-$flavour"
-$app = Join-Path $dist "sbs3d"
+$app = Join-Path $dist "StereoCraft"
 
-Write-Host "sbs3d $version -- portable Windows build ($flavour)" -ForegroundColor Green
+Write-Host "StereoCraft $version -- portable Windows build ($flavour)" -ForegroundColor Green
 Write-Host "  source : $root"
 Write-Host "  build  : $Work"
 
@@ -76,7 +76,7 @@ Write-Host "  build  : $Work"
 # matters when the checkout itself lives somewhere slower, WSL included.
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-foreach ($item in @("sbs3d", "packaging", "pyproject.toml", "requirements.txt", "README.md", "LICENSE")) {
+foreach ($item in @("stereocraft", "packaging", "pyproject.toml", "requirements.txt", "README.md", "LICENSE")) {
     Copy-Item (Join-Path $root $item) -Destination $stage -Recurse -Force
 }
 Get-ChildItem $stage -Recurse -Force -Filter "__pycache__" | Remove-Item -Recurse -Force
@@ -106,7 +106,7 @@ foreach ($model in $Models) {
 Invoke-Tool $vpy @(
     "-m", "PyInstaller", "--noconfirm", "--clean",
     "--distpath", $dist, "--workpath", (Join-Path $Work "work-$flavour"),
-    (Join-Path $stage "packaging\windows\sbs3d.spec")
+    (Join-Path $stage "packaging\windows\stereocraft.spec")
 )
 
 # --- everything that goes beside the exe rather than inside it -------------
@@ -118,11 +118,11 @@ foreach ($model in $Models) {
 Copy-Item (Join-Path $root "README.md") -Destination $app -Force
 Copy-Item (Join-Path $root "LICENSE") -Destination $app -Force
 Set-Content -Path (Join-Path $app "Read me first.txt") -Encoding UTF8 -Value @"
-sbs3d $version -- side-by-side 3D photos
+StereoCraft $version -- side-by-side 3D photos
 
-Double-click sbs3d.exe.  Nothing to install: the whole app is this folder, so
+Double-click StereoCraft.exe.  Nothing to install: the whole app is this folder, so
 it can live on a USB stick or anywhere else you like, as long as it stays
-together.  sbs3d-cli.exe is the same program for the command line -- run it
+together.  StereoCraft-cli.exe is the same program for the command line -- run it
 from a terminal with --help to see what it takes.
 
 This is the $flavour build. $(if ($Cuda) { "It uses an NVIDIA card when there is one, and falls back to the processor." } else { "It runs on the processor, so a large photo takes a little while." })
@@ -132,7 +132,7 @@ $size = "{0:N0} MB" -f ((Get-ChildItem $app -Recurse -File | Measure-Object Leng
 Write-Host "`nBuilt $app ($size)" -ForegroundColor Green
 
 if (-not $SkipZip) {
-    $zip = Join-Path $Work "sbs3d-$version-win64-$flavour.zip"
+    $zip = Join-Path $Work "StereoCraft-$version-win64-$flavour.zip"
     if (Test-Path $zip) { Remove-Item $zip -Force }
     Write-Host "Zipping to $zip ..."
     Add-Type -AssemblyName System.IO.Compression.FileSystem

@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sbs3d"
+name = "stereocraft"
 version = "1.0.0"
 description = "Turn a photo into a full-resolution side-by-side 3D image"
 readme = "README.md"
@@ -18,11 +18,11 @@ dependencies = [
 ]
 
 [project.scripts]
-sbs3d = "sbs3d.cli:main"
-sbs3d-gui = "sbs3d.gui:main"
+stereocraft = "stereocraft.cli:main"
+stereocraft-gui = "stereocraft.gui:main"
 
 [tool.setuptools]
-packages = ["sbs3d"]
+packages = ["stereocraft"]
 
 [tool.black]
 line-length = 110

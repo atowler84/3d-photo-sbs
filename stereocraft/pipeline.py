@@ -291,5 +291,5 @@ class Converter:
 
 
 def convert(src, dst=None, **kwargs):
-    """One-shot helper for scripts: `sbs3d.convert("photo.jpg", disparity=2.5)`."""
+    """One-shot helper for scripts: `stereocraft.convert("photo.jpg", disparity=2.5)`."""
     return Converter(Settings(**kwargs)).convert(src, dst)

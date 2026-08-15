@@ -1,6 +1,6 @@
 """Entry point for the packaged Windows build.
 
-One folder holds two exes: `sbs3d.exe` opens the window, `sbs3d-cli.exe` is the
+One folder holds two exes: `StereoCraft.exe` opens the window, `StereoCraft-cli.exe` is the
 command line.  They are the same program -- the analysis PyInstaller does over
 Torch is slow and would be identical for both -- so the name the exe was
 launched under is what decides which half runs.
@@ -26,9 +26,9 @@ def main():
             setattr(sys, name, null)
 
     if "cli" in os.path.basename(sys.argv[0]).lower():
-        from sbs3d.cli import main as run
+        from stereocraft.cli import main as run
     else:
-        from sbs3d.gui import main as run
+        from stereocraft.gui import main as run
     return run()
 
 

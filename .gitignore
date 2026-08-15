@@ -6,3 +6,4 @@ image/
 *_sbs.jpg
 *_sbs.png
 *_depth.png
+*.egg-info/

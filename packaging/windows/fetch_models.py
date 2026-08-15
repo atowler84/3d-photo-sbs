@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)))
 
-from sbs3d.depth import MODELS  # noqa: E402
+from stereocraft.depth import MODELS  # noqa: E402
 
 
 def main(argv=None):

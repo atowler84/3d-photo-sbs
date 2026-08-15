@@ -42,7 +42,7 @@ class App:
         self.finished = 0
         self.errors = []
 
-        root.title("sbs3d - side-by-side 3D photos")
+        root.title("StereoCraft - side-by-side 3D photos")
         root.minsize(700, 560)
         frame = ttk.Frame(root, padding=12)
         frame.pack(fill="both", expand=True)
@@ -315,16 +315,16 @@ class App:
                 self.running = False
                 self._refresh_controls()
                 if self.errors:
-                    messagebox.showerror("sbs3d", "\n".join(self.errors))
+                    messagebox.showerror("StereoCraft", "\n".join(self.errors))
         self.root.after(100, self._drain)
 
     def _oversize_dialog(self, oversize):
         """The modal question itself, on the main thread where Tk wants it."""
         if oversize.target is None:
-            messagebox.showerror("sbs3d", oversize.describe())
+            messagebox.showerror("StereoCraft", oversize.describe())
             return "skip"
         resize = messagebox.askyesno(
-            "sbs3d - photo too large",
+            "StereoCraft - photo too large",
             f"{oversize.describe()}\n\nResize it and convert, or skip this photo?",
             default="yes", icon="question")
         return "resize" if resize else "skip"

@@ -10,11 +10,11 @@ import os
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir, os.pardir))
-ICON = os.path.join(SPECPATH, "sbs3d.ico")
+ICON = os.path.join(SPECPATH, "stereocraft.ico")
 
 hiddenimports = [
-    "sbs3d.cli",
-    "sbs3d.gui",
+    "stereocraft.cli",
+    "stereocraft.gui",
     # transformers reaches its model classes by name through the auto mappings,
     # so there is no import statement for the analysis to follow to them.
     "transformers.models.depth_anything.configuration_depth_anything",
@@ -54,7 +54,7 @@ pyz = PYZ(a.pure)
 gui = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
-    name="sbs3d",
+    name="StereoCraft",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -67,7 +67,7 @@ gui = EXE(
 cli = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
-    name="sbs3d-cli",
+    name="StereoCraft-cli",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -82,5 +82,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="sbs3d",
+    name="StereoCraft",
 )

@@ -62,7 +62,7 @@ def oversize_handler(mode):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="sbs3d",
+        prog="stereocraft",
         description="Turn a photo into a full-resolution side-by-side 3D image.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -85,7 +85,7 @@ def build_parser():
     parser.add_argument("--oversize", choices=("ask", "skip", "resize"), default="ask",
                         help="a photo too big for memory: ask, skip it, or resize it to fit")
     parser.add_argument("--gui", action="store_true", help="open the desktop window instead")
-    parser.add_argument("-V", "--version", action="version", version=f"sbs3d {__version__}")
+    parser.add_argument("-V", "--version", action="version", version=f"StereoCraft {__version__}")
     return parser
 
 
