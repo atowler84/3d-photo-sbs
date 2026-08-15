@@ -3,19 +3,28 @@
 import argparse
 import glob
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
-from .pipeline import SUFFIXES, Converter, Settings
+from .pipeline import SUFFIXES, Converter, Settings, VideoSettings
+from .video import VIDEO_SUFFIXES, clock, convert_video
+
+
+MEDIA = SUFFIXES | VIDEO_SUFFIXES
+
+
+def is_video(path):
+    return Path(path).suffix.lower() in VIDEO_SUFFIXES
 
 
 def collect(inputs):
-    """Expand files, directories and globs into a sorted list of photos."""
+    """Expand files, directories and globs into a sorted list of photos and clips."""
     found = []
     for item in inputs:
         path = Path(item)
         if path.is_dir():
-            found += sorted(p for p in path.iterdir() if p.suffix.lower() in SUFFIXES)
+            found += sorted(p for p in path.iterdir() if p.suffix.lower() in MEDIA)
         elif path.exists():
             found.append(path)
         else:  # let the shell off the hook for unexpanded globs
@@ -71,10 +80,10 @@ class Defaults(argparse.ArgumentDefaultsHelpFormatter):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="stereocraft",
-        description="Turn a photo into a full-resolution side-by-side 3D image.",
+        description="Turn a photo or a video into a side-by-side 3D one.",
         formatter_class=Defaults,
     )
-    parser.add_argument("inputs", nargs="*", help="image files or folders")
+    parser.add_argument("inputs", nargs="*", help="image or video files, or folders")
     parser.add_argument("-o", "--output", help="output file, or folder for several inputs")
     parser.add_argument("-e", "--eyes", default=None, metavar="MM",
                         help="distance between the two eyes, in millimetres, or auto to size it "
@@ -85,7 +94,7 @@ def build_parser():
                              "distance has no separation; nearer comes forward, further recedes")
     parser.add_argument("-t", "--target", type=float, default=None, metavar="PCT",
                         help="what auto aims for: near-to-far separation as a %% of frame width. "
-                             "of frame width")
+                             "(default: 2.0 photo, 1.3 video)")
     parser.add_argument("--limit", type=float, default=3.0, metavar="PCT",
                         help="ceiling on separation as a %% of frame width, so something very "
                              "close cannot demand more parallax than an eye can fuse")
@@ -95,7 +104,7 @@ def build_parser():
                              "fitted onto an assumed range")
     parser.add_argument("--depth-size", default=None,
                         help="longest side fed to the depth model (shortest, for the da2 models), "
-                             "or auto to follow the photo")
+                             "or auto to follow the frame. (default: auto photo, 1400 video)")
     # The old names meant something this no longer computes.  Failing loudly beats
     # translating them into a number that only looks like what was asked for.
     parser.add_argument("-d", "--disparity", type=float, help=argparse.SUPPRESS)
@@ -109,9 +118,50 @@ def build_parser():
     parser.add_argument("--oversize", choices=("ask", "skip", "resize"), default="ask",
                         help="a photo too big for memory: ask, skip it, or resize it to fit")
 
+    video = parser.add_argument_group("video")
+    video.add_argument("--full", action="store_true",
+                       help="keep every native pixel, doubling the frame width, instead of "
+                            "squeezing each eye to half width as players expect")
+    video.add_argument("--temporal", type=float, default=0.5, metavar="KEEP",
+                       help="how much of the previous frame's depth to carry over, 0 to 0.95. "
+                            "Steadies a clip that shimmers, at a little edge sharpness; 0 is off")
+    video.add_argument("--crf", type=int, default=18, help="encoder quality, lower is better")
+    video.add_argument("--codec", choices=("h264", "hevc"), default="h264",
+                       help="hevc is worth it above 4K, where h264 runs out of level")
+    video.add_argument("--no-audio", action="store_true", help="leave the soundtrack behind")
     parser.add_argument("--gui", action="store_true", help="open the desktop window instead")
     parser.add_argument("-V", "--version", action="version", version=f"StereoCraft {__version__}")
     return parser
+
+
+def reporter(name, prefix):
+    """Progress for a clip, which unlike a photo takes long enough to need it.
+
+    One line that rewrites itself, and only when someone is there to watch it --
+    redirected into a file it would leave thousands of lines nobody reads, so a
+    pipe gets nothing and the finished line at the end says it all.
+    """
+    if not sys.stderr.isatty():
+        return None
+    last = warm = 0.0
+
+    def report(done, total, seconds):
+        nonlocal last, warm
+        now = time.monotonic()
+        # The first frame pays for the graphics driver building its kernels, and
+        # counting that against all the rest puts minutes on the first estimate.
+        if done == 1:
+            warm = seconds
+        if done < total and now - last < 0.5:  # a frame can land every few ms
+            return True
+        last = now
+        rate = (done - 1) / (seconds - warm) if done > 1 and seconds > warm else 0
+        left = f"  {clock((total - done) / rate)} left" if rate and total > done else ""
+        share = f"{done}/{total}" if total else f"{done}"
+        print(f"\r{prefix}{name}  frame {share}{left}      ", end="", file=sys.stderr, flush=True)
+        return True
+
+    return report
 
 
 def _number(value):
@@ -121,8 +171,13 @@ def _number(value):
     return float(value)
 
 
-def settings_for(args):
-    """The settings a run converts with."""
+def settings_for(args, video):
+    """The settings for one kind of input.
+
+    `--eyes` and `--depth-size` are left unset by default so that each kind can
+    bring its own, which is the whole of how a clip ends up gentler than a photo
+    without anyone having to ask for it.
+    """
     common = dict(
         model=args.model,
         focus_m=_number(args.focus),
@@ -131,8 +186,12 @@ def settings_for(args):
         device=args.device,
         on_oversize=oversize_handler(args.oversize),
     )
-    settings = Settings(**common, max_size=args.max_size, quality=args.quality,
-                        fmt=args.fmt, save_depth=args.save_depth)
+    if video:
+        settings = VideoSettings(**common, full_width=args.full, temporal=args.temporal,
+                                 crf=args.crf, codec=args.codec, audio=not args.no_audio)
+    else:
+        settings = Settings(**common, max_size=args.max_size, quality=args.quality,
+                            fmt=args.fmt, save_depth=args.save_depth)
     if args.eyes is not None:
         settings.eyes_mm = _number(args.eyes)
     if args.target is not None:
@@ -183,13 +242,25 @@ def main(argv=None):
         print("with several inputs, --output must be a folder", file=sys.stderr)
         return 2
 
-    converter = Converter(settings_for(args))
+    # One converter for the batch either way, so the depth model is loaded once;
+    # only the settings on it change as the run moves between stills and clips.
+    converter = Converter(settings_for(args, video=False))
+    for_photos, for_videos = converter.settings, settings_for(args, video=True)
     failures = skipped = 0
     for index, item in enumerate(photos, 1):
         prefix = f"[{index}/{len(photos)}] " if len(photos) > 1 else ""
+        moving = is_video(item)
+        converter.settings = for_videos if moving else for_photos
         try:
-            info = converter.convert(item, args.output)
-        except Exception as error:  # keep a batch going when one photo is broken
+            if moving:
+                info = convert_video(item, args.output, converter, reporter(item.name, prefix))
+                print("\r\033[K" if sys.stderr.isatty() else "", end="", file=sys.stderr)
+            else:
+                info = converter.convert(item, args.output)
+        except KeyboardInterrupt:
+            print(f"\n{prefix}{item.name}: stopped", file=sys.stderr)
+            return 130
+        except Exception as error:  # keep a batch going when one file is broken
             failures += 1
             print(f"{prefix}{item.name}: {error}", file=sys.stderr)
             continue
@@ -202,9 +273,16 @@ def main(argv=None):
         if info["resized_from"]:
             was, now = info["resized_from"], info["source_size"]
             note = f"  (resized from {was[0]}x{was[1]} to {now[0]}x{now[1]})"
-        print(f"{prefix}{info['output']}  {width}x{height}  {info['seconds']:.1f}s{note}")
+        # A photo is quick enough to be worth a tenth of a second; a clip is
+        # measured in minutes, where that precision would be noise.
+        if moving:
+            note = f"  {info['frames']} frames{note}"
+            taken = clock(info["seconds"])
+        else:
+            taken = f"{info['seconds']:.1f}s"
+        print(f"{prefix}{info['output']}  {width}x{height}{note}  {taken}")
     if skipped:
-        print(f"{skipped} photo{'s' if skipped > 1 else ''} skipped as too large", file=sys.stderr)
+        print(f"{skipped} file{'s' if skipped > 1 else ''} skipped as too large", file=sys.stderr)
     return 1 if failures else 0
 
 

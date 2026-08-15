@@ -49,6 +49,44 @@ class Settings:
     on_oversize: object = None
 
 
+@dataclass
+class VideoSettings(Settings):
+    """The same settings, carrying the defaults a moving picture wants instead.
+
+    `target_pct` is lower, which comes to the same thing as a narrower baseline:
+    any error in the depth map becomes a horizontal position error in proportion
+    to the separation, and less separation shrinks it.  A still shows that error
+    as a silhouette a pixel out of place, which nobody sees; a clip shows it as
+    an edge that shimmers, which everybody does.  The gaps the warp opens up
+    scale with it too, and a filled gap that reads as plausible while it holds
+    still crawls once the edge it belongs to moves.  A narrower baseline is what
+    stepping back from the scene would do -- the geometry stays self-consistent,
+    it is simply a smaller pair of eyes.
+
+    `depth_size` is pinned rather than following the frame, because feeding the
+    network more pixels buys fine per-frame structure that the temporal smoothing
+    then averages away.
+
+    `focus_m` is deliberately not changed: at 3m almost the whole scene sits
+    behind the window with only a near subject in front of it, and that is the
+    arrangement that stays comfortable.  Things poking out of the screen are what
+    break at the frame edge, and motion makes that worse rather than better.
+    """
+
+    target_pct: float = 1.3
+    depth_size: object = 1400
+    # Squeeze each eye to half width, so the clip comes out the size it went in.
+    # That is what players and headsets expect, and what their hardware decoders
+    # can actually keep up with -- full width doubles it, and 4K doubled is past
+    # what most of them will take.
+    full_width: bool = False
+    # How much of the previous frame's depth to keep, 0 for none.
+    temporal: float = 0.5
+    crf: int = 18
+    codec: str = "h264"
+    audio: bool = True
+
+
 class TooBig(Exception):
     """A photo that will not fit in memory, and the resize that would fit.
 

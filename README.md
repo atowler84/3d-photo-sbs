@@ -1,10 +1,11 @@
 # StereoCraft
 
-Turn a single photo into a **full-resolution side-by-side 3D image**.
+Turn a single photo — or a video — into a **side-by-side 3D** one.
 
 One job, done well: estimate a depth map, re-project the picture into a left and
 a right eye view, and write the pair as one frame you can drop straight into a
-headset or view free-eyed. Nothing is downscaled along the way.
+headset or view free-eyed. A photo keeps every pixel it arrived with; a clip is
+squeezed to half a frame per eye, because that is what players will decode.
 
 | Photo | Output | Time |
 | --- | --- | --- |
@@ -26,6 +27,7 @@ model](#which-model).
 
 ```
 photo.jpg  ->  photo_sbs.jpg        (left | right, full width, no downscaling)
+clip.mp4   ->  clip_sbs.mp4         (left | right, half width per eye, sound kept)
 ```
 
 ## Install
@@ -49,6 +51,14 @@ sudo apt install python3-tk
 
 JPEG, PNG, HEIC, WebP, TIFF and BMP all work, so photos come straight off a
 phone without converting anything first.
+
+Video needs ffmpeg, which does the decoding and encoding either side of the
+conversion. A copy sitting next to the app is used if there is one, so the
+portable build can carry its own:
+
+```bash
+sudo apt install ffmpeg
+```
 
 Depth weights download themselves on first run (~1.3 GB for the large model) and
 are cached. If a `hf-cache/` folder exists next to the app it is used instead of
@@ -100,6 +110,11 @@ the first run on a new machine pays again while the driver builds its kernel
 cache -- 14 s once, then 3 s at the start of each session, then a tenth of a
 second per photo.
 
+The build does not yet carry ffmpeg, so video on a packaged copy needs ffmpeg
+installed on the machine, or `ffmpeg.exe` and `ffprobe.exe` dropped into the
+folder beside `StereoCraft.exe`, where they are picked up automatically. Photos
+need nothing.
+
 The spec has not been brought forward to Depth Anything 3 either. It still
 excludes OpenCV and torchvision, which the depth model now needs, so a packaged
 build will want both added and will grow accordingly.
@@ -119,10 +134,15 @@ stereocraft ~/Pictures/holiday --output ~/Pictures/3d
 ```
 
 ```bash
+stereocraft clip.mp4
+```
+
+```bash
 stereocraft-gui
 ```
 
-The window keeps the depth model resident, so the first photo pays the load and
+Photos and clips go in the same run and the same window queue, and the depth
+model is loaded once for the lot. The first photo pays the two second load and
 the rest convert in well under a second each.
 
 ## When a photo is too big
@@ -161,6 +181,102 @@ model would:
 No smaller size would fit either: the depth model needs that much whatever size the photo is.
 The base depth model would fit, and costs little in quality (--model base).
 ```
+
+## Video
+
+```bash
+stereocraft clip.mp4
+```
+
+Every frame gets exactly what a photo gets. Two things are added around it, and
+both come from the picture moving rather than from anything about video files.
+
+### The defaults are gentler
+
+A clip aims for 1.3% of frame width where a photo aims for 2.0%, and pins the
+depth network rather than letting it follow the frame.
+
+Any error in the depth map becomes a horizontal position error in proportion to
+the separation. In a still that is a silhouette a pixel out of place and nobody
+sees it; in a clip it is an edge that shimmers and everybody does. The gaps the
+warp opens up scale with it too, and a filled gap that reads as plausible while
+it holds still crawls once the edge it belongs to moves. And a photo gets a
+glance where a clip gets several minutes, so what is merely noticeable becomes
+tiring.
+
+`--target` overrides it in either direction, and is worth a try on your own
+footage: 1.3 is a reasoned starting point, not a measured one.
+
+The focus distance is left to `auto` exactly as it is for a photo. It puts most
+of the scene behind the window with only a near subject in front of it, which is
+the arrangement that stays comfortable — things poking out of the screen are what
+break at the frame edge, and motion makes that worse rather than better.
+
+### Depth is held still between frames
+
+Depth Anything is a per-frame model, and a per-frame estimate wobbles. In a depth
+map that reads as noise; turned into a stereo pair it is the *geometry* that
+wobbles, which is a great deal harder to look at. `--temporal` carries some of
+each frame's depth into the next, and a frame that differs wholesale from the one
+before it is treated as a cut, where the memory starts again.
+
+This section used to describe something more elaborate, and the honest version is
+shorter. Depth-Anything V2 had to have its percentile range smoothed over time as
+well, because re-measuring it every frame made the whole map slide about. Metric
+depth needs no range at all — metres are metres whatever else is in the frame.
+
+But that did not make things quieter, which is worth saying plainly because the
+opposite was expected. Renormalising every frame had also been cancelling the
+model's own scale wobble, and measured on a static shot with sensor noise, metric
+depth is about a third *noisier* frame to frame. Smoothing the metric scale back
+out was tried and made it worse still: the noise is spread through the map rather
+than sitting in one global factor.
+
+It does not matter, which is why only the plain average is left. In the units
+that count — how far the disparity field actually moves between frames — both
+models sit near a tenth of a pixel before any smoothing at all, against roughly a
+third of a pixel for the smallest movement an eye can pick out:
+
+| | no smoothing | `--temporal 0.5` |
+| --- | --- | --- |
+| Depth Anything 3 | 0.14 px | 0.07 px |
+| Depth-Anything V2 | 0.11 px | 0.05 px |
+
+Smoothing still costs a little edge sharpness, so `--temporal 0` declines it.
+
+### Half a frame per eye
+
+Unlike a photo, a clip does not come out at native width. Each eye is squeezed to
+half the frame, so 1080p in is 1920×1080 out rather than 3792×1080.
+
+That is what players and headsets expect, and more to the point what their
+hardware decoders will take — 4K doubled is 7616 px wide, past the level h.264
+defines and past what most headsets will decode at all. `--full` keeps every
+native pixel for a player known to handle it, and `--codec hevc` is worth pairing
+with it.
+
+The soundtrack comes across untouched wherever the container will take it as it
+stands, and is re-encoded to AAC only where it would otherwise be refused.
+`--no-audio` leaves it behind.
+
+### How long it takes
+
+| Clip | Per frame | Per minute of footage |
+| --- | --- | --- |
+| 1280 × 720 | 49 ms | 1.5 min |
+| 1920 × 1080 | 58 ms | 1.7 min |
+| 3840 × 2160 | 144 ms | 4.3 min |
+
+On an RTX 4080 Super with the model already loaded — so roughly one and a half to
+four times slower than watching it. The CPU is not really in the running: 1080p
+costs 5.1 s a frame with the large model, which is two and a half hours for a
+minute of footage. `--model base` brings that to 1.7 s and 52 minutes, which is
+the difference between an overnight job and a hopeless one.
+
+Anything that long is worth being able to watch and to stop. The command line
+rewrites a line with the frame count and an estimate; the window shows the frame
+it is working on and counts the queue down. Either can be stopped part-way, and
+neither leaves a half-written file behind.
 
 ## Which settings?
 
@@ -255,10 +371,10 @@ knowing before trusting a `--save-depth` map as a measurement.
 | --- | --- | --- |
 | `-e`, `--eyes` | `auto` | Distance between the two eyes, in millimetres, or `auto` to size it to the scene. 65 is the human average; a landscape wants far more and a close-up far less. |
 | `-f`, `--focus` | `auto` | How far away the screen plane sits, in metres, or `auto`. Whatever is at this distance sits in the screen; nearer comes out, further recedes. |
-| `-t`, `--target` | `2.0` | What `auto` aims for: near-to-far separation as a percentage of frame width. The knob to reach for when the effect is too strong or too flat. |
+| `-t`, `--target` | `2.0` photo, `1.3` video | What `auto` aims for: near-to-far separation as a percentage of frame width. The knob to reach for when the effect is too strong or too flat. |
 | `--limit` | `3.0` | Ceiling on separation, as a percentage of frame width, so something very close cannot demand more parallax than an eye can fuse. |
 | `-m`, `--model` | `da3` | `da3` measures depth in metres. `da2-large`, `da2-base`, `da2-small` only rank it and are fitted onto an assumed range — a fallback, see [which model](#which-model). |
-| `--depth-size` | `auto` | Longest side fed to the depth network (shortest, for the `da2` models). `auto` follows the photo up to 2048 px; bigger gives cleaner subject silhouettes, which is what the warp cares about. |
+| `--depth-size` | `auto` photo, `1400` video | Longest side fed to the depth network (shortest, for the `da2` models). `auto` follows the photo up to 2048 px; bigger gives cleaner subject silhouettes, which is what the warp cares about. A clip is pinned, since the finer structure is what the temporal smoothing then averages away. |
 | `--cross` | off | Write right\|left for cross-eyed viewing instead of left\|right. Not a quality setting: it only matters when free-viewing on a monitor. |
 | `--max-size` | `0` | Cap the output width. Native by default; useful if a viewer chokes on very wide images. |
 | `--format`, `-q` | `auto`, `95` | Output container and JPEG quality. |
@@ -266,11 +382,22 @@ knowing before trusting a `--save-depth` map as a measurement.
 | `--device` | `auto` | `cuda`, `mps` or `cpu`. |
 | `--oversize` | `ask` | A photo too big for memory: `ask` what to do, `skip` it, or `resize` it to the largest size that fits. |
 
+Video only:
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--temporal` | `0.5` | How much of the previous frame's depth to carry over, 0 to 0.95. Steadies a clip that shimmers, at a little edge sharpness; `0` turns it off. |
+| `--full` | off | Keep every native pixel, doubling the frame width, instead of squeezing each eye to half width. Needs a player that will decode it. |
+| `--codec` | `h264` | `hevc` is worth it above 4K, where h264 runs out of level. |
+| `--crf` | `18` | Encoder quality; lower is better and larger. |
+| `--no-audio` | off | Leave the soundtrack behind rather than carrying it across. |
+
 As a library:
 
 ```python
 import stereocraft
 stereocraft.convert("photo.jpg", eyes_mm=65, focus_m=3)
+stereocraft.convert_video("clip.mp4", target_pct=1.0)
 ```
 
 ## How it works
@@ -295,7 +422,12 @@ stereocraft.convert("photo.jpg", eyes_mm=65, focus_m=3)
    and no ghost of the foreground edge.
 6. **Framing** — both eyes shift content sideways, leaving a sliver at the frame
    edge no real pixel reaches. It is trimmed rather than invented, costing about
-   1% of the width.
+   1% of the width. A clip pins that trim to its settings rather than measuring
+   it per frame, since frames that changed size part-way through are not
+   something any encoder will take.
+7. **Time**, for a clip only — the percentile range and then the depth map are
+   carried forward from frame to frame, so the geometry stops wobbling. See
+   [Video](#video).
 
 There is no mesh, no inpainting network and no OpenGL context: the whole render
 is a handful of tensor ops, which is why it runs at native resolution rather than
@@ -303,10 +435,18 @@ the 768px ceiling a mesh pipeline imposes.
 
 ## Viewing
 
-The output is full-width SBS: each eye keeps its own full width, so the file is
-twice as wide as the source. Quest, Pico and Vision Pro read it directly through
-any local media viewer; on a desktop, free-viewing works with the parallel
-method, or use `--cross` and cross your eyes.
+A photo comes out full-width SBS: each eye keeps its own full width, so the file
+is twice as wide as the source. A clip comes out half-width per eye, at the size
+it went in, which is the arrangement players and their hardware decoders expect —
+`--full` overrides that.
+
+Quest, Pico and Vision Pro read both directly through any local media viewer; on
+a desktop, free-viewing works with the parallel method, or use `--cross` and
+cross your eyes.
+
+Nothing in an mp4 announces that it is side-by-side, so players go by the file
+name and most of them recognise the `_sbs` the output already carries. A player
+that guesses wrong has a setting for it.
 
 ## License
 

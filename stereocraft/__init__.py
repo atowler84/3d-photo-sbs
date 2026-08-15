@@ -2,9 +2,10 @@
 
 __version__ = "1.0.0"
 
-__all__ = ["Settings", "Converter", "convert"]
+__all__ = ["Settings", "VideoSettings", "Converter", "convert", "convert_video"]
 
-_HOMES = {name: ".pipeline" for name in __all__}
+_HOMES = {"Settings": ".pipeline", "VideoSettings": ".pipeline", "Converter": ".pipeline",
+          "convert": ".pipeline", "convert_video": ".video"}
 
 
 def __getattr__(name):
