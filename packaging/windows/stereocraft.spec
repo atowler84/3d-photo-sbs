@@ -76,11 +76,12 @@ a = Analysis(
     # asks it to do.  `depth.DepthEstimator._load_da3` puts a stub in front of
     # that import, so leaving them out costs nothing at runtime.
     # Everything here was checked by blocking the import and converting a photo,
-    # rather than guessed at.  scipy and pandas used to be on this list and had to
-    # come off it: `evo`, which DA3 imports for pose alignment, pulls both.
+    # rather than guessed at.  `evo` matters beyond size: it is GPL-3.0, the only
+    # copyleft package DA3 would otherwise pull in, and stubbing the module that
+    # imports it takes scipy out with it.
     excludes=[
         "torchaudio", "tensorflow", "jax", "flax", "keras",
-        "matplotlib", "IPython", "notebook", "pytest",
+        "evo", "scipy", "matplotlib", "IPython", "notebook", "pytest",
         "moviepy", "gsplat", "open3d", "pycolmap", "trimesh", "plyfile",
         "fastapi", "uvicorn", "gradio", "e3nn", "dash", "flask",
     ],

@@ -454,14 +454,37 @@ that guesses wrong has a setting for it.
 MIT, see [LICENSE](LICENSE).
 
 The depth weights are downloaded at runtime rather than shipped here, and carry
-their own terms. The default is now the permissive one, which it did not use to
-be: **DA3METRIC-LARGE is Apache-2.0**, as is Depth-Anything V2 Small. Only the
-V2 Base and Large fallbacks are CC BY-NC 4.0, and those are not licensed for
-commercial use.
+their own terms. The default is the permissive one, which it did not use to be:
+**DA3METRIC-LARGE is Apache-2.0**, as is Depth-Anything V2 Small. Only the V2
+Base and Large fallbacks are CC BY-NC 4.0, and those are not licensed for
+commercial use — `-Models da2-large` puts one of them back in the folder.
 
-So a default Windows build ships nothing that stops you selling it, where before
-this it did. Adding `-Models da2-large` puts a non-commercial checkpoint back in
-the folder.
+Everything else in a default build is permissive too, which took some arranging:
+
+| | |
+| --- | --- |
+| StereoCraft | MIT |
+| DA3METRIC-LARGE weights, depth-anything-3, transformers, OpenCV, safetensors, huggingface-hub | Apache-2.0 |
+| Torch, torchvision, NumPy, pandas, pillow-heif, OmegaConf | BSD |
+| Pillow | MIT-CMU |
+| imageio | BSD-2 |
+| einops | MIT |
+| tqdm | MPL-2.0 and MIT |
+| ffmpeg (bundled) | LGPL v3 |
+
+Two things were deliberately kept out. **`evo` is GPL-3.0** — DA3 imports it to
+align camera poses, which a monocular app never does, so the module that reaches
+for it is stubbed and `evo` is excluded from the build. And the ffmpeg that ships
+is the **LGPL** build rather than the usual "essentials" one, which is compiled
+`--enable-gpl` for x264 and x265. That costs the x264 encoder; the app falls to
+the graphics card or to a non-GPL software encoder without being asked.
+
+Dropping a GPL ffmpeg into the folder yourself restores x264 and is picked up
+automatically — a reasonable thing to do for your own use, and a thing to think
+about before redistributing.
+
+`addict` states no licence in its metadata; worth confirming before you rely on
+any of this. None of the above is legal advice.
 
 This repository began as a fork of
 [3D-Photo-Inpainting](https://github.com/vt-vl-lab/3d-photo-inpainting) by way of

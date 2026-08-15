@@ -41,7 +41,24 @@ VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mts", ".m2t
 # Audio an mp4 will carry as it stands.  Anything else is re-encoded, which is a
 # generation of loss on the soundtrack but beats refusing the file.
 COPYABLE_AUDIO = {"aac", "mp3", "ac3", "eac3", "alac"}
-ENCODERS = {"h264": "libx264", "hevc": "libx265"}
+# What to encode with, best first, per codec.  Which of these exists depends on
+# how the ffmpeg to hand was built: an LGPL build carries no x264 or x265, both
+# being GPL, so a portable app that ships its own cannot assume them.  Each entry
+# is (encoder, quality flag, extra arguments) -- they do not agree on how quality
+# is expressed, which is the other reason this cannot be one hardcoded name.
+ENCODERS = {
+    "h264": [("libx264", "-crf", ["-preset", "medium"]),
+             ("h264_nvenc", "-cq", ["-rc", "vbr", "-preset", "p6"]),
+             ("h264_qsv", "-global_quality", []),
+             ("h264_amf", "-qp_i", []),
+             ("libopenh264", "-q", []),
+             ("h264_mf", "-q", [])],
+    "hevc": [("libx265", "-crf", ["-preset", "medium"]),
+             ("hevc_nvenc", "-cq", ["-rc", "vbr", "-preset", "p6"]),
+             ("hevc_qsv", "-global_quality", []),
+             ("hevc_amf", "-qp_i", []),
+             ("hevc_mf", "-q", [])],
+}
 # Frame-to-frame change in depth, relative to the depth itself, that means the
 # picture cut rather than moved.  Relative because metres have no fixed scale --
 # an ordinary pan sits far below this at any distance.
@@ -59,6 +76,35 @@ class MissingFFmpeg(Exception):
             "  Windows:       winget install ffmpeg\n"
             f"A copy of {name} sitting beside the app is used too, if there is one."
         )
+
+
+def available_encoders():
+    """The encoder names this ffmpeg was built with, asked once and remembered."""
+    global _ENCODERS_SEEN
+    if _ENCODERS_SEEN is None:
+        result = subprocess.run([_tool("ffmpeg"), "-hide_banner", "-encoders"],
+                                capture_output=True, text=True)
+        _ENCODERS_SEEN = {line.split()[1] for line in result.stdout.splitlines()
+                          if line.startswith(" ") and len(line.split()) > 1}
+    return _ENCODERS_SEEN
+
+
+def pick_encoder(codec):
+    """The best encoder available for this codec, and how to ask it for quality.
+
+    x264 first where it exists, being the best of them at a given size.  A build
+    without it -- an LGPL one, most likely -- falls to the graphics card, and
+    failing that to a software encoder that is not GPL.  Something is always
+    there, so the choice never has to be explained to whoever is converting.
+    """
+    have = available_encoders()
+    for name, quality, extra in ENCODERS.get(codec, ENCODERS["h264"]):
+        if name in have:
+            return name, quality, extra
+    raise MissingFFmpeg(f"an encoder for {codec}")
+
+
+_ENCODERS_SEEN = None
 
 
 def _tool(name):
@@ -291,8 +337,9 @@ def _encoder(out, src, clip, geo, cfg, stderr):
         # clip that quietly cost three frames off the end.  Every frame rendered
         # is a frame worth keeping; a fractionally long soundtrack is harmless.
         args += ["-i", str(src), "-map", "0:v:0", "-map", "1:a:0"]
-    args += ["-c:v", ENCODERS.get(cfg.codec, ENCODERS["h264"]), "-crf", str(cfg.crf),
-             "-preset", "medium", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    encoder, quality, extra = pick_encoder(cfg.codec)
+    args += ["-c:v", encoder, quality, str(cfg.crf), *extra,
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     if sound:
         # Copied when the container will take it as it is, so the soundtrack goes
         # through untouched; re-encoded only when it would otherwise be refused.

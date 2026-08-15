@@ -179,21 +179,31 @@ class DepthEstimator:
 
     # --- loading ------------------------------------------------------------
     def _load_da3(self):
-        # DA3's api module imports its glb/ply/gaussian-splat exporters at import
-        # time, and those drag in moviepy, cv2 and gsplat.  None of it is wanted
-        # for a depth map, and one of them is not even installable alongside the
-        # rest, so the whole branch is replaced before it is ever reached.  Do
-        # not "fix" this by installing them.
         import types
 
         # DA3 narrates every inference to stdout, which would sit in the middle of
         # the progress line a clip is drawing.  Its logger reads this once, at
         # import, and has no other switch.
         os.environ.setdefault("DA3_LOG_LEVEL", "WARN")
-        if "depth_anything_3.utils.export" not in sys.modules:
-            stub = types.ModuleType("depth_anything_3.utils.export")
-            stub.export = lambda *args, **kwargs: None
-            sys.modules["depth_anything_3.utils.export"] = stub
+
+        # Two of DA3's api-level imports are replaced before they are reached.
+        # Neither is used for a depth map, and both cost more than they are worth:
+        #
+        #   export     -- glb/ply/gaussian-splat writers, which drag in moviepy,
+        #                 cv2 and gsplat.  We write images, not meshes.
+        #   pose_align -- aligns camera poses across views, using `evo`.  This
+        #                 app is monocular: the metric model returns no
+        #                 intrinsics and no extrinsics, so there are no poses to
+        #                 align.  `evo` is also GPL-3.0, and stubbing it keeps the
+        #                 whole distribution permissively licensed.
+        #
+        # Do not "fix" either of these by installing the missing packages.
+        for name, attribute in (("depth_anything_3.utils.export", "export"),
+                                ("depth_anything_3.utils.pose_align", "align_poses_umeyama")):
+            if name not in sys.modules:
+                stub = types.ModuleType(name)
+                setattr(stub, attribute, lambda *args, **kwargs: None)
+                sys.modules[name] = stub
         from depth_anything_3.api import DepthAnything3  # heavy; import on demand
 
         return DepthAnything3.from_pretrained(checkpoint("da3")).to(self.device).eval()

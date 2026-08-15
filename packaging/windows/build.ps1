@@ -118,7 +118,12 @@ if (-not $SkipFfmpeg) {
     if (-not (Test-Path (Join-Path $ffmpegCache "ffmpeg.exe"))) {
         $archive = Join-Path $Work "ffmpeg.zip"
         Write-Host "`nFetching ffmpeg ..." -ForegroundColor DarkCyan
-        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" `
+        # The LGPL build, deliberately.  The usual "essentials" one is built
+        # --enable-gpl for x264 and x265, and shipping it would put a GPL binary
+        # in the folder.  LGPL costs the x264 encoder; `video.pick_encoder` falls
+        # to the graphics card, or to a non-GPL software encoder, and says
+        # nothing about it.
+        Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip" `
             -OutFile $archive -UseBasicParsing
         $unpacked = Join-Path $Work "ffmpeg-unpacked"
         if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
