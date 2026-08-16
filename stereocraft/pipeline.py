@@ -197,6 +197,43 @@ def save_image(array, path, quality=95):
     return path
 
 
+def save_depth_map(inverse, path):
+    """Write the depth map as a 16-bit PNG: near white, far black.
+
+    This used to store centimetres, on the reasoning that real units beat a
+    pretty picture.  They do, but only if you can see them -- a scene two to
+    twenty-five metres away came out between 195 and 2475 of a possible 65535,
+    which is a black rectangle.  Nobody could tell a working depth map from a
+    broken one.
+
+    So it is scaled across its own range to be looked at, and the two distances
+    that scaling used go in the PNG's own metadata, which keeps it measurable:
+
+        metres = far - (value / 65535) * (far - near)
+    """
+    # The pipeline hands over a plain [H, W]; tolerate the leading dimensions a
+    # caller might keep, since a wrong shape here writes a file rather than
+    # raising, and a wrong file is harder to notice.
+    while inverse.dim() > 2:
+        inverse = inverse[0]
+    metres = 1.0 / inverse.clamp_min(1e-6)
+    near, far = float(metres.min()), float(metres.max())
+    if far - near < 1e-6:  # a scene all at one distance has nothing to shade
+        scaled = torch.zeros_like(metres)
+    else:
+        scaled = (far - metres) / (far - near)
+    gray = (scaled.clamp(0, 1) * 65535).round().to(torch.int32).cpu().numpy().astype(np.uint16)
+
+    from PIL.PngImagePlugin import PngInfo
+
+    meta = PngInfo()
+    meta.add_text("stereocraft:near_m", f"{near:.6f}")
+    meta.add_text("stereocraft:far_m", f"{far:.6f}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(gray, mode="I;16").save(path, pnginfo=meta)
+    return path
+
+
 def _area(size):
     """Pixels in a proposed size, and less than nothing for "no size at all",
     so that any real offer beats having none."""
@@ -385,12 +422,7 @@ class Converter:
 
         out = save_image(_to_uint8(sbs), output_path(src, dst, cfg.fmt), cfg.quality)
         if cfg.save_depth:
-            # Centimetres, not a normalised grey ramp: the depth is in real units
-            # now, and a map you can measure off is worth more than a pretty one.
-            # 16 bits reaches 655m, which is past anything a photograph resolves.
-            centimetres = (100.0 / inverse.clamp_min(1e-6)).clamp(0, 65535)
-            gray = centimetres.round().to(torch.int32).cpu().numpy().astype(np.uint16)
-            Image.fromarray(gray, mode="I;16").save(out.with_name(f"{Path(src).stem}_depth.png"))
+            save_depth_map(inverse, out.with_name(f"{Path(src).stem}_depth.png"))
 
         return {
             "input": Path(src),

@@ -43,5 +43,11 @@ packages = ["stereocraft"]
 [tool.setuptools.package-data]
 stereocraft = ["*.ico"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `-m "not slow"` skips everything needing the depth model, which is the
+# difference between a second and half a minute.
+markers = ["slow: needs the depth model loaded"]
+
 [tool.black]
 line-length = 110
