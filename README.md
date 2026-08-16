@@ -148,6 +148,18 @@ Photos and clips go in the same run and the same window queue, and the depth
 model is loaded once for the lot. The first photo pays the two second load and
 the rest convert in well under a second each.
 
+The window is the queue down the left, the settings and the finished pair on the
+right. The settings are three tabs -- General for what the scene looks like,
+Photo and Video for what each is written as -- and the tab that governs the first
+file added comes up with it. Each tab has its own Reset to default, which puts
+that tab back and leaves the others alone, and goes grey once there is nothing
+left on it to undo.
+
+What is not on the window is what there is no judgement in: the model, the
+resolution it runs at, the comfort limit and which device does the work are all
+left where they belong, and a photo too big for memory is asked about rather
+than settled in advance.
+
 ## When a photo is too big
 
 Every conversion is sized up before the photo is even decoded, against what the

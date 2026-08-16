@@ -26,8 +26,25 @@ FILETYPES = [
     ("All files", "*.*"),
 ]
 PREVIEW_WIDTH = 620
-# The window always uses the best depth model at its best working resolution --
-# the only settings on show are the ones that are a matter of taste.
+# How wide the explanatory line under a setting is allowed to run before it
+# wraps, which is what stops a long hint deciding how wide the window is.
+HINT_WIDTH = 560
+# The result sits on a dark mat, the way a print is mounted -- it is what a
+# side-by-side pair is easiest to judge against, and it stops a bright photo
+# glaring against the window behind it.
+MAT = "#1b1b1b"
+MAT_TEXT = "#9a9a9a"
+EMPTY = ("Nothing converted yet\n\n"
+         "The side-by-side pair appears here as each file finishes,\n"
+         "and frame by frame while a clip is being converted.")
+NO_CAPTION = " "  # keeps the caption's line of height, so nothing jumps later
+# The cap on the finished pair's width, for a viewer that will not open
+# something enormous.  Native is no cap at all, which is the usual answer.
+WIDTHS = [("Native size", 0), ("Up to 4096 px", 4096), ("Up to 6144 px", 6144),
+          ("Up to 8192 px", 8192), ("Up to 12288 px", 12288)]
+# The window always uses the best depth model at its best working resolution, and
+# neither is on show: what is on show is what the picture looks like and what it
+# comes out as, which is what there is any judgement in.
 #
 # What is recommended depends on whether the picture moves: a clip wants a
 # gentler depth than a still, because an error the eye forgives in something it
@@ -70,44 +87,29 @@ class App:
         self.preview = None
         self.finished = 0
         self.errors = []
+        self.cross_used = False  # the viewing order the current run is writing
 
         root.title("StereoCraft - side-by-side 3D")
         self._set_icon(root)
-        root.minsize(700, 560)
+        root.minsize(960, 720)
         frame = ttk.Frame(root, padding=12)
         frame.pack(fill="both", expand=True)
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(1, weight=1)
+        # The queue keeps a fixed width and everything else takes the slack:
+        # file names are all much of a length, whereas the result is what has
+        # something to do with every extra pixel.
+        frame.columnconfigure(0, minsize=250)
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(0, weight=1)
 
-        bar = ttk.Frame(frame)
-        bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        self.add_button = ttk.Button(bar, text="Add files...", command=self.add_files)
-        self.add_button.pack(side="left")
-        self.remove_button = ttk.Button(bar, text="Remove", command=self.remove_selected)
-        self.remove_button.pack(side="left", padx=4)
-        self.clear_button = ttk.Button(bar, text="Clear", command=self.clear)
-        self.clear_button.pack(side="left")
-        self.dest_label = ttk.Label(bar, text="Saving beside each file")
-        self.dest_label.pack(side="right")
-        ttk.Button(bar, text="Output folder...", command=self.pick_output).pack(side="right", padx=6)
-
-        # exportselection off, or clicking anything else on the window takes the
-        # X selection away and silently empties this one -- which would disable
-        # Remove out from under a photo the user can still see highlighted.
-        self.listbox = tk.Listbox(frame, height=6, selectmode="extended", activestyle="none",
-                                  exportselection=False)
-        self.listbox.grid(row=1, column=0, sticky="nsew")
-        self.listbox.bind("<<ListboxSelect>>", lambda *_: self._refresh_controls())
-        self._row_fg = self.listbox.cget("foreground") or "black"
-
-        self._build_settings(frame)
-
-        self.canvas = tk.Label(frame, background="#1b1b1b", anchor="center")
-        self.canvas.grid(row=6, column=0, sticky="nsew", pady=(8, 8))
-        frame.rowconfigure(6, weight=2)
+        self._build_queue(frame)
+        right = ttk.Frame(frame)
+        right.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+        right.columnconfigure(0, weight=1)
+        self._build_settings(right)
+        self._build_result(right)
 
         footer = ttk.Frame(frame)
-        footer.grid(row=7, column=0, sticky="ew")
+        footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         footer.columnconfigure(2, weight=1)
         self.convert_button = ttk.Button(footer, text="Convert", command=self.start)
         self.convert_button.grid(row=0, column=0)
@@ -120,9 +122,13 @@ class App:
         self.status = ttk.Label(footer, text="Add a photo or a video to begin")
         self.status.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-        # The settings a Reset would undo; watching them is what tells the button
-        # whether there is anything left to undo.
-        for variable in (self.eyes, self.focus, self.cross, self.automatic):
+        # Every setting a Reset would put back.  Watching all of them is what
+        # tells each tab's button whether it has anything left to undo, and the
+        # eyes and the focus which of them are the user's to set.
+        for variable in (self.automatic, self.eyes, self.focus, self.cross,
+                         self.photo_depth, self.fmt, self.quality, self.max_size,
+                         self.save_depth, self.target, self.temporal, self.crf,
+                         self.codec, self.audio, self.full_width):
             variable.trace_add("write", lambda *_: self._refresh_controls())
         self._refresh_controls()
 
@@ -150,9 +156,82 @@ class App:
             except Exception:  # a window with the wrong icon still converts photos
                 pass
 
+    def _build_queue(self, parent):
+        """The list of files, down the left-hand side of the window.
+
+        A column rather than a band across the top: a queue grows downwards, so
+        given the height it shows a whole batch at once, and the width it gives
+        up is width the picture beside it would not have used anyway.
+        """
+        box = ttk.LabelFrame(parent, text="Queue", padding=8)
+        box.grid(row=0, column=0, sticky="nsew")
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(1, weight=1)
+
+        buttons = ttk.Frame(box)
+        buttons.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.add_button = ttk.Button(buttons, text="Add files...", command=self.add_files)
+        self.add_button.pack(side="left")
+        self.remove_button = ttk.Button(buttons, text="Remove", command=self.remove_selected)
+        self.remove_button.pack(side="left", padx=4)
+        self.clear_button = ttk.Button(buttons, text="Clear", command=self.clear)
+        self.clear_button.pack(side="left")
+
+        rows = ttk.Frame(box)
+        rows.grid(row=1, column=0, sticky="nsew")
+        rows.columnconfigure(0, weight=1)
+        rows.rowconfigure(0, weight=1)
+        # exportselection off, or clicking anything else on the window takes the
+        # X selection away and silently empties this one -- which would disable
+        # Remove out from under a photo the user can still see highlighted.
+        self.listbox = tk.Listbox(rows, width=28, height=12, selectmode="extended",
+                                  activestyle="none", exportselection=False,
+                                  borderwidth=1, relief="solid", highlightthickness=0)
+        self.listbox.grid(row=0, column=0, sticky="nsew")
+        # A tall list is a list worth scrolling, and the bar only appears once
+        # there is more in the queue than fits.
+        scroll = ttk.Scrollbar(rows, orient="vertical", command=self.listbox.yview)
+        self.listbox.config(yscrollcommand=lambda first, last: self._scrollbar(scroll, first, last))
+        self.listbox.bind("<<ListboxSelect>>", lambda *_: self._refresh_controls())
+        self._row_fg = self.listbox.cget("foreground") or "black"
+
+        ttk.Button(box, text="Output folder...", command=self.pick_output).grid(
+            row=2, column=0, sticky="w", pady=(8, 0))
+        self.dest_label = ttk.Label(box, text="Saving beside each file", foreground="#777",
+                                    wraplength=220)
+        self.dest_label.grid(row=3, column=0, sticky="w", pady=(2, 0))
+
+    @staticmethod
+    def _scrollbar(scroll, first, last):
+        """Show the queue's scrollbar only while it has somewhere to scroll."""
+        scroll.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            scroll.grid_remove()
+        else:
+            scroll.grid(row=0, column=1, sticky="ns", padx=(2, 0))
+
     def _build_settings(self, parent):
-        box = ttk.LabelFrame(parent, text="Settings", padding=8)
-        box.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        """The settings, as three tabs of what they apply to.
+
+        Split that way rather than by what they do: a run is usually all photos
+        or all clips, and a tab puts the half that has nothing to say about the
+        queue out of the way instead of greying it out in front of you.
+        """
+        self.tabs = ttk.Notebook(parent)
+        self.tabs.grid(row=0, column=0, sticky="ew")
+        # One Reset per tab, each with the question of whether it has anything
+        # left to put back; see `_reset_button`.
+        self._resets = []
+        self._manual = []  # sliders that only apply when NOT matching the scene
+        self._auto_only = []  # ...and the ones that only apply when it is
+        self._build_general(self.tabs)
+        self.photo_tab = self._build_photo(self.tabs)
+        self.video_tab = self._build_video(self.tabs)
+
+    def _build_general(self, tabs):
+        """What the scene looks like, whether it moves or not."""
+        box = ttk.Frame(tabs, padding=10)
+        tabs.add(box, text="General")
         box.columnconfigure(1, weight=1)
 
         # On by default, because sizing the eyes to the scene beats any single
@@ -166,55 +245,143 @@ class App:
         # almost nothing and the near half everything.
         self.focus = tk.DoubleVar(value=1.0 / self.recommended[1])
         self.cross = tk.BooleanVar(value=False)
-        self.save_depth = tk.BooleanVar(value=False)
-        self._value_labels = []
-        self._manual = []  # the sliders that only apply when not matching the scene
 
-        self._slider(box, 0, "Eye separation", self.eyes, 20.0, 80.0, "{:.0f} mm",
-                     "How far apart your two eyes are. 65mm is the human average; smaller is a"
-                     " gentler effect, and a video is recommended gentler than a photo.")
-        self._slider(box, 2, "Focus distance", self.focus, 1.0 / 20, 1.0 / 0.5,
-                     lambda v: f"{1.0 / v:.1f} m",
-                     "How far away the window sits. Whatever is at this distance looks like it is"
-                     " in the screen; nearer comes out of it, further recedes behind it.")
+        # First, because it decides which of the two below it are yours to set:
+        # matching the scene drives the eyes and the focus itself, and takes its
+        # instructions from the Depth slider on the tab for what is in the queue.
+        ttk.Checkbutton(box, text="Match the scene automatically (recommended)",
+                        variable=self.automatic).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(box, text="Sizes the eyes and the focus to what is actually in the picture,"
+                            " and aims for the Depth set on the Photo or Video tab.",
+                  foreground="#777", wraplength=HINT_WIDTH, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
+
+        self._manual.append(self._slider(
+            box, 2, "Eye separation", self.eyes, 20.0, 80.0, "{:.0f} mm",
+            "How far apart your two eyes are. 65mm is the human average; smaller is a"
+            " gentler effect, and a video is recommended gentler than a photo."))
+        self._manual.append(self._slider(
+            box, 4, "Focus distance", self.focus, 1.0 / 20, 1.0 / 0.5,
+            lambda v: f"{1.0 / v:.1f} m",
+            "How far away the window sits. Whatever is at this distance looks like it is"
+            " in the screen; nearer comes out of it, further recedes behind it."))
 
         ttk.Checkbutton(box, text="Cross-eyed order (only for free-viewing without a headset)",
-                        variable=self.cross).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+                        variable=self.cross).grid(row=6, column=0, columnspan=3, sticky="w",
+                                                  pady=(4, 0))
+        self._reset_button(box, 7, self.reset_general, self._general_at_default)
+
+    def _build_photo(self, tabs):
+        """How much depth a still asks for, and what it is written as."""
+        box = ttk.Frame(tabs, padding=10)
+        tabs.add(box, text="Photo")
+        box.columnconfigure(1, weight=1)
+
+        self.photo_depth = tk.DoubleVar(value=Settings.target_pct)
+        self.fmt = tk.StringVar(value=Settings.fmt)
+        self.quality = tk.DoubleVar(value=Settings.quality)
+        self.max_size = tk.StringVar(value=WIDTHS[0][0])
+        self.save_depth = tk.BooleanVar(value=False)
+
+        self._auto_only.append(self._slider(
+            box, 0, "Depth", self.photo_depth, 0.5, 3.5, "{:.1f}%",
+            "How much separation matching the scene aims for, as a share of the width."
+            " 2% is a comfortable pair of eyes; more is stronger and harder to fuse."))
+
+        row = ttk.Frame(box)
+        row.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(row, text="File format").pack(side="left")
+        for value, text in (("auto", "Same as the photo"), ("jpg", "JPEG"), ("png", "PNG")):
+            ttk.Radiobutton(row, text=text, value=value,
+                            variable=self.fmt).pack(side="left", padx=(8, 0))
+        ttk.Label(box, text="A side-by-side pair is twice the pixels of the photo, so JPEG at a"
+                            " high quality is usually the sensible one. PNG is lossless and large.",
+                  foreground="#777", wraplength=HINT_WIDTH, justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        self.quality_scale = self._slider(
+            box, 4, "JPEG quality", self.quality, 70.0, 100.0, "{:.0f}",
+            "95 keeps the compression out of the depth cues; below about 85 the edges the"
+            " warp opened up start to show as blocks.")
+
+        row = ttk.Frame(box)
+        row.grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(row, text="Output width").pack(side="left")
+        self.width_box = ttk.Combobox(row, textvariable=self.max_size, state="readonly", width=18,
+                                      values=[name for name, _ in WIDTHS])
+        self.width_box.pack(side="left", padx=(8, 0))
+        ttk.Label(box, text="A cap for a viewer that will not open something enormous. The pair"
+                            " comes out about twice as wide as the photo went in.",
+                  foreground="#777", wraplength=HINT_WIDTH, justify="left").grid(row=7, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
         ttk.Checkbutton(box, text="Also save the depth map", variable=self.save_depth).grid(
-            row=5, column=0, columnspan=3, sticky="w")
-        self._build_video_settings(parent)
-        ttk.Checkbutton(box, text="Match the scene automatically (recommended)",
-                        variable=self.automatic, command=self._refresh_controls).grid(
-                            row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        self.reset_button = ttk.Button(box, text="Reset to recommended", command=self.reset_settings)
-        self.reset_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
+            row=8, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self._reset_button(box, 9, self.reset_photo, self._photo_at_default)
+        return box
 
-    def _build_video_settings(self, parent):
-        """The three that only mean anything once the picture moves.
+    def _build_video(self, tabs):
+        """What a clip costs to look at for several minutes.
 
-        Kept in their own box rather than mixed in with the sliders above: those
-        two are about what the scene looks like, these are about what a clip
-        costs to look at for several minutes.
+        Its own tab rather than mixed in with the two sliders on General: those
+        are about what the scene looks like, these are about what holds up over
+        a few thousand frames of it.
         """
-        box = ttk.LabelFrame(parent, text="Video", padding=8)
-        box.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        box = ttk.Frame(tabs, padding=10)
+        tabs.add(box, text="Video")
         box.columnconfigure(1, weight=1)
 
         self.target = tk.DoubleVar(value=VideoSettings.target_pct)
         self.temporal = tk.DoubleVar(value=VideoSettings.temporal)
         self.codec = tk.StringVar(value=VideoSettings.codec)
+        self.crf = tk.DoubleVar(value=VideoSettings.crf)
+        self.audio = tk.BooleanVar(value=VideoSettings.audio)
+        self.full_width = tk.BooleanVar(value=VideoSettings.full_width)
 
-        self._slider(box, 0, "Depth", self.target, 0.4, 3.0, "{:.1f}%",
-                     "How much separation a clip aims for. Lower than a photo on purpose:"
-                     " an error you would not notice in a still shimmers once it moves.")
+        self._auto_only.append(self._slider(
+            box, 0, "Depth", self.target, 0.4, 3.0, "{:.1f}%",
+            "How much separation a clip aims for. Lower than a photo on purpose:"
+            " an error you would not notice in a still shimmers once it moves."))
         self._slider(box, 2, "Steadiness", self.temporal, 0.0, 0.95, "{:.2f}",
                      "How much of each frame's depth carries into the next. Higher is"
                      " calmer and very slightly softer; 0 turns it off.")
+        self._slider(box, 4, "Encoder quality", self.crf, 14.0, 28.0, "CRF {:.0f}",
+                     "Lower is better and bigger. 18 is visually lossless; 23 is about half"
+                     " the file and still good.")
+
         row = ttk.Frame(box)
-        row.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        row.grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
         ttk.Label(row, text="Codec").pack(side="left")
         for value, text in (("h264", "H.264 (plays anywhere)"), ("hevc", "HEVC (better above 4K)")):
             ttk.Radiobutton(row, text=text, value=value, variable=self.codec).pack(side="left", padx=(8, 0))
+
+        ttk.Checkbutton(box, text="Keep the soundtrack", variable=self.audio).grid(
+            row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(box, text="Full width (every native pixel, twice as wide)",
+                        variable=self.full_width).grid(row=8, column=0, columnspan=3, sticky="w")
+        ttk.Label(box, text="Off squeezes each eye to half width, which is what players and"
+                            " headsets expect and what their decoders can keep up with.",
+                  foreground="#777", wraplength=HINT_WIDTH, justify="left").grid(row=9, column=0, columnspan=3, sticky="w")
+        self._reset_button(box, 10, self.reset_video, self._video_at_default)
+        return box
+
+    def _build_result(self, parent):
+        """Where the finished pair is shown.
+
+        A picture wants a dark mat around it, but a dark rectangle with nothing
+        in it reads as something broken -- so until there is a picture the mat
+        says what will be arriving in it, and afterwards a line underneath says
+        what it is looking at.
+        """
+        box = ttk.LabelFrame(parent, text="Result", padding=8)
+        box.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        parent.rowconfigure(1, weight=1)
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(0, weight=1, minsize=PREVIEW_WIDTH // 2 + 16)
+
+        self.canvas = tk.Label(box, background=MAT, foreground=MAT_TEXT, text=EMPTY,
+                               justify="center", anchor="center", compound="center",
+                               borderwidth=1, relief="solid", padx=10, pady=10)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.caption = ttk.Label(box, text=NO_CAPTION, foreground="#777", anchor="center")
+        self.caption.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
     def _slider(self, parent, row, label, variable, low, high, fmt, hint):
         """`fmt` is a format string, or a callable for a value the slider does not
@@ -222,23 +389,70 @@ class App:
         show = fmt if callable(fmt) else fmt.format
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
         value = ttk.Label(parent, text=show(variable.get()), width=8, anchor="e")
-        update = lambda *_: value.config(text=show(variable.get()))
-        scale = ttk.Scale(parent, from_=low, to=high, variable=variable, orient="horizontal",
-                          command=update)
+        # Watching the variable rather than the slider, so a value put back by a
+        # Reset shows up the same as one dragged there.
+        variable.trace_add("write", lambda *_: value.config(text=show(variable.get())))
+        scale = ttk.Scale(parent, from_=low, to=high, variable=variable, orient="horizontal")
         scale.grid(row=row, column=1, sticky="ew", padx=8)
-        self._manual.append(scale)
         value.grid(row=row, column=2, sticky="w")
-        ttk.Label(parent, text=hint, foreground="#777").grid(
-            row=row + 1, column=0, columnspan=3, sticky="w", pady=(0, 4))
-        self._value_labels.append(update)
+        ttk.Label(parent, text=hint, foreground="#777", wraplength=HINT_WIDTH,
+                  justify="left").grid(row=row + 1, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        return scale  # so the caller can say when it applies; see `_refresh_controls`
 
-    def reset_settings(self):
+    def _reset_button(self, parent, row, reset, at_default):
+        """Each tab puts its own settings back, and only its own.
+
+        One button for the lot would be a button that undoes work on a tab you
+        cannot see; and it goes grey when its tab is already at its defaults,
+        which is also how you can tell at a glance that it is.
+        """
+        button = ttk.Button(parent, text="Reset to default", command=reset)
+        button.grid(row=row, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        self._resets.append((button, at_default))
+        return button
+
+    def reset_general(self):
         eyes, focus = self.recommended
+        self.automatic.set(True)
         self.eyes.set(eyes)
         self.focus.set(1.0 / focus)
         self.cross.set(False)
-        for update in self._value_labels:
-            update()
+
+    def _general_at_default(self):
+        """What the eyes and the focus go back to follows the queue: a clip is
+        recommended gentler than a still.  See `_sync_recommendation`."""
+        return (self.automatic.get() and self._sliders_at(self.recommended)
+                and not self.cross.get())
+
+    def reset_photo(self):
+        self.photo_depth.set(Settings.target_pct)
+        self.fmt.set(Settings.fmt)
+        self.quality.set(Settings.quality)
+        self.max_size.set(WIDTHS[0][0])
+        self.save_depth.set(False)
+
+    def _photo_at_default(self):
+        return (round(self.photo_depth.get(), 2) == Settings.target_pct
+                and self.fmt.get() == Settings.fmt
+                and round(self.quality.get()) == Settings.quality
+                and self.max_size.get() == WIDTHS[0][0]
+                and not self.save_depth.get())
+
+    def reset_video(self):
+        self.target.set(VideoSettings.target_pct)
+        self.temporal.set(VideoSettings.temporal)
+        self.crf.set(VideoSettings.crf)
+        self.codec.set(VideoSettings.codec)
+        self.audio.set(VideoSettings.audio)
+        self.full_width.set(VideoSettings.full_width)
+
+    def _video_at_default(self):
+        return (round(self.target.get(), 2) == VideoSettings.target_pct
+                and round(self.temporal.get(), 2) == VideoSettings.temporal
+                and round(self.crf.get()) == VideoSettings.crf
+                and self.codec.get() == VideoSettings.codec
+                and self.audio.get() == VideoSettings.audio
+                and self.full_width.get() == VideoSettings.full_width)
 
     def _sliders_at(self, values):
         eyes, focus = values
@@ -262,19 +476,22 @@ class App:
             return None
         self.eyes.set(wanted[0])
         self.focus.set(1.0 / wanted[1])
-        for update in self._value_labels:
-            update()
         return wanted
 
     # --- file list ---------------------------------------------------------
     def add_files(self):
         chosen = filedialog.askopenfilenames(title="Choose photos or videos", filetypes=FILETYPES)
+        first = not self.files
         for name in chosen:
             path = Path(name)
             if path not in self.files:
                 self.files.append(path)
                 self.states.append(("pending", ""))
                 self.listbox.insert("end", self._row_label(len(self.files) - 1))
+        # Opening a queue puts up the tab that has something to say about it.
+        # Only the first time, so a tab chosen since is not taken away again.
+        if first and self.files:
+            self.tabs.select(self.video_tab if is_video(self.files[0]) else self.photo_tab)
         moved = self._sync_recommendation()
         self._refresh_status()
         if moved:
@@ -295,6 +512,7 @@ class App:
         self.states.clear()
         self._sync_recommendation()
         self._refresh_status()
+        self._clear_result()
 
     def _row_label(self, index):
         state, detail = self.states[index]
@@ -318,11 +536,6 @@ class App:
         if state == "working":
             self.listbox.see(index)  # follow a long batch down the list
 
-    def _at_defaults(self):
-        """Is there anything for Reset to undo?  Only the three settings it
-        actually puts back are asked about; saving the depth map is not one."""
-        return self._sliders_at(self.recommended) and not self.cross.get()
-
     def _refresh_controls(self):
         """Offer only what there is currently something to do with."""
         idle = not self.running
@@ -332,9 +545,14 @@ class App:
             # so the list stays put until it has finished with it.
             (self.remove_button, idle and bool(self.listbox.curselection())),
             (self.clear_button, idle and bool(self.files)),
-            (self.reset_button, not self._at_defaults()),
+            *((button, not at_default()) for button, at_default in self._resets),
             (self.stop_button, self.running and not self.cancel.is_set()),
+            # The eyes and the focus are yours only when the scene is not
+            # setting them; the Depth sliders are the other way round, being
+            # what matching the scene aims for.
             *((slider, not self.automatic.get()) for slider in self._manual),
+            *((slider, self.automatic.get()) for slider in self._auto_only),
+            (self.quality_scale, self.fmt.get() != "png"),
         ):
             button.state(["!disabled"] if usable else ["disabled"])
 
@@ -366,12 +584,14 @@ class App:
             return
         self.convert_button.state(["disabled"])
         self.running = True
+        self.cross_used = self.cross.get()
         self.cancel.clear()
         self.finished = 0
         self.errors = []
         for index in range(len(self.files)):
             self._set_row(index, "pending")  # a re-run starts everything over
         self._refresh_controls()
+        self._clear_result("Converting...")
         self.progress.config(maximum=len(self.files), value=0)
         automatic = self.automatic.get()
         common = dict(
@@ -380,10 +600,15 @@ class App:
             cross_eyed=self.cross.get(),
             on_oversize=self._ask_oversize,
         )
-        settings = (Settings(save_depth=self.save_depth.get(), **common),
+        settings = (Settings(target_pct=round(self.photo_depth.get(), 2),
+                             quality=int(round(self.quality.get())), fmt=self.fmt.get(),
+                             max_size=dict(WIDTHS)[self.max_size.get()],
+                             save_depth=self.save_depth.get(), **common),
                     VideoSettings(target_pct=round(self.target.get(), 2),
                                   temporal=round(self.temporal.get(), 2),
-                                  codec=self.codec.get(), **common))
+                                  crf=int(round(self.crf.get())), codec=self.codec.get(),
+                                  audio=self.audio.get(), full_width=self.full_width.get(),
+                                  **common))
         threading.Thread(target=self._work, args=(list(self.files), self.output_dir, settings),
                          daemon=True).start()
 
@@ -422,7 +647,7 @@ class App:
                 try:
                     if moving:
                         info = convert_video(path, output_dir, self.converter,
-                                             self._progress(index), self._previewer())
+                                             self._progress(index), self._previewer(path))
                     else:
                         info = self.converter.convert(path, output_dir)
                 except Exception as error:
@@ -456,7 +681,7 @@ class App:
 
         return report
 
-    def _previewer(self):
+    def _previewer(self, path):
         """Show the frame being worked on, now and then.
 
         The array has already been made for the encoder, so this costs the
@@ -476,7 +701,7 @@ class App:
 
                 image = Image.fromarray(pixels)
                 image.thumbnail((PREVIEW_WIDTH, PREVIEW_WIDTH // 2), Image.BILINEAR)
-                self.events.put(("preview", image))
+                self.events.put(("preview", (image, f"{path.name} - the frame being converted")))
             except Exception:  # a preview is a nicety; the encode carries on
                 pass
 
@@ -518,8 +743,8 @@ class App:
             elif kind == "preview":
                 from PIL import ImageTk
 
-                self.preview = ImageTk.PhotoImage(payload)
-                self.canvas.config(image=self.preview)
+                image, caption = payload
+                self._show_result(ImageTk.PhotoImage(image), caption)
             elif kind == "stopped":
                 self.finished += 1
                 self.progress.config(value=self.finished)
@@ -543,10 +768,18 @@ class App:
                     detail = f"{width}x{height} in {info['seconds']:.1f}s" + (" (resized)" if was else "")
                 self._set_row(index, "done", detail)
                 self.status.config(text=f"{info['output'].name}  -  {detail}{note}")
-                # A clip has its own last frame on the canvas already; a photo is
-                # only ever seen once it is written.
-                if "frames" not in info:
-                    self._show(info["output"])
+                # A clip has its own last frame on the mat already, so it only
+                # needs the caption saying what that frame turned out to be; a
+                # photo is not seen at all until it is written.
+                # The line under the picture says what it is and how to look
+                # at it, the two things the file itself cannot tell you; the
+                # status line below already has the timings.
+                order = "cross-eyed order" if self.cross_used else "left eye on the left"
+                caption = f"{info['output'].name}  -  {width}x{height}, {order}"
+                if "frames" in info:
+                    self.caption.config(text=caption)
+                else:
+                    self._show(info["output"], caption)
             elif kind == "finished":
                 self.convert_button.state(["!disabled"])
                 self.running = False
@@ -569,14 +802,25 @@ class App:
             default="yes", icon="question")
         return "resize" if resize else "skip"
 
-    def _show(self, path):
+    def _show_result(self, image, caption):
+        """Put a picture on the mat, in place of whatever it was saying."""
+        self.preview = image  # Tk drops an image nothing is holding on to
+        self.canvas.config(image=image, text="")
+        self.caption.config(text=caption)
+
+    def _clear_result(self, text=EMPTY):
+        """Take the picture off it again, leaving something to read instead."""
+        self.preview = None
+        self.canvas.config(image="", text=text)
+        self.caption.config(text=NO_CAPTION)
+
+    def _show(self, path, caption):
         try:
             from PIL import Image, ImageTk
 
             with Image.open(path) as image:
                 image.thumbnail((PREVIEW_WIDTH, PREVIEW_WIDTH // 2), Image.LANCZOS)
-                self.preview = ImageTk.PhotoImage(image.copy())
-            self.canvas.config(image=self.preview)
+                self._show_result(ImageTk.PhotoImage(image.copy()), caption)
         except Exception:  # a preview is a nicety; the file is already written
             pass
 
