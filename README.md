@@ -450,6 +450,34 @@ stereocraft.convert("photo.jpg", eyes_mm=65, focus_m=3)
 stereocraft.convert_video("clip.mp4", target_pct=1.0)
 ```
 
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest -m "not slow"
+```
+
+That is 89 of them in under two seconds — the geometry against the formula it is
+supposed to implement, the automatically chosen baseline landing on target from a
+0.2 m close-up to a 20 m telephoto, what the memory budget will and will not
+offer, argument handling, and the video plumbing. None of it needs the depth
+model.
+
+```bash
+pytest
+```
+
+runs the other nine as well, which convert a real photo and a real clip end to
+end and take about half a minute, most of it loading the model.
+
+They exist because two bugs got past careful manual checking in a single week.
+`-shortest` quietly trimmed three frames off a ninety-frame clip and survived a
+verification pass that counted frame *sizes* rather than frames. `--save-depth`
+started writing centimetres, which is correct and looks like a black rectangle,
+and survived because nothing asserted the map was legible. Both now have a test
+named after what went wrong, and the second was checked by putting the bug back
+and watching three of them fail.
+
 ## How it works
 
 1. **Depth** — Depth Anything 3 predicts depth in metres, converted to inverse
