@@ -97,6 +97,15 @@ has never seen the internet.
 | `-Python <path>` | which `python.exe` to build with; found on its own otherwise |
 | `-TorchIndex cu130` | a different CUDA build of Torch. The default `cu126` runs on any driver from 525 up, where `cu130` wants 580 or newer. All three of `cu126`, `cu128` and `cu130` publish wheels for Python 3.14 |
 
+The ffmpeg it fetches is the **LGPL** build, chosen so the finished folder can be
+handed to anyone -- the usual "essentials" build is compiled `--enable-gpl` for
+x264 and x265. The cost is that x264 is not in there, so video encodes on the
+graphics card instead, or on a non-GPL software encoder. That is a little worse
+per byte, and invisible unless you look. Copying a GPL `ffmpeg.exe` and
+`ffprobe.exe` over the ones in the folder restores x264 immediately and needs no
+flag -- worth doing for your own use, worth undoing before passing the folder on.
+See [which encoder does the writing](#which-encoder-does-the-writing).
+
 With `-SkipZip` the app is left in `dist-<flavour>\StereoCraft` under the build
 folder, ready to copy wherever it is going to live. Move it somewhere of its own
 before building again, because the next build overwrites that folder.
@@ -260,6 +269,28 @@ The soundtrack comes across untouched wherever the container will take it as it
 stands, and is re-encoded to AAC only where it would otherwise be refused.
 `--no-audio` leaves it behind.
 
+### Which encoder does the writing
+
+Not always the same one. `--codec` picks the format; what actually encodes it
+depends on how the ffmpeg to hand was built, because x264 and x265 are GPL and
+an LGPL ffmpeg carries neither. The order tried is:
+
+1. **libx264 / libx265** — the best of them at a given file size
+2. **NVENC**, then QSV, then AMF — the graphics card, if there is one
+3. **libopenh264**, then MediaFoundation — software, and not GPL
+
+Whichever it lands on, `--crf` still means quality, though the encoders spell it
+differently underneath (`-crf`, `-cq`, `-global_quality`). Nothing is printed
+about the choice, so if you want to know what wrote a file:
+
+```bash
+ffprobe -v error -select_streams v:0 -show_entries stream_tags=encoder -of csv=p=0 clip_sbs.mp4
+```
+
+The portable Windows build ships an LGPL ffmpeg, so it uses the graphics card
+rather than x264 — see [a Windows app](#a-windows-app). Dropping a GPL ffmpeg
+into the folder puts x264 back, with no flag to set.
+
 ### How long it takes
 
 | Clip | Per frame | Per minute of footage |
@@ -389,8 +420,8 @@ Video only:
 | --- | --- | --- |
 | `--temporal` | `0.5` | How much of the previous frame's depth to carry over, 0 to 0.95. Steadies a clip that shimmers, at a little edge sharpness; `0` turns it off. |
 | `--full` | off | Keep every native pixel, doubling the frame width, instead of squeezing each eye to half width. Needs a player that will decode it. |
-| `--codec` | `h264` | `hevc` is worth it above 4K, where h264 runs out of level. |
-| `--crf` | `18` | Encoder quality; lower is better and larger. |
+| `--codec` | `h264` | `hevc` is worth it above 4K, where h264 runs out of level. Which encoder produces it depends on the ffmpeg to hand — see [which encoder does the writing](#which-encoder-does-the-writing). |
+| `--crf` | `18` | Encoder quality; lower is better and larger. Means the same thing whichever encoder runs, though they spell it differently underneath. |
 | `--no-audio` | off | Leave the soundtrack behind rather than carrying it across. |
 
 As a library:
