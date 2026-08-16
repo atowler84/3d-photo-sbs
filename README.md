@@ -10,8 +10,8 @@ squeezed to half a frame per eye, because that is what players will decode.
 | Photo | Output | Time |
 | --- | --- | --- |
 | 1.9 MP | 3152 × 1197 | 0.5 s |
-| 7.1 MP | 6040 × 2304 | 1.2 s |
-| 12.5 MP | 6044 × 4080 | 1.4 s |
+| 7.1 MP | 6040 × 2304 | 1.3 s |
+| 12.5 MP | 6044 × 4080 | 1.5 s |
 
 Measured on an RTX 4080 Super with the model already loaded; add about fifteen
 seconds for the first photo of a session. The GPU path falls back to the CPU
@@ -21,8 +21,10 @@ big](#when-a-photo-is-too-big).
 
 There is a CPU path too and it is a great deal slower, because most of the cost
 is the depth network rather than the pixels: a snapshot costs nearly as much as
-a raw. On a machine without a GPU the lighter `--model da2-large` is the trade
-worth making, at some cost in geometry -- see [which
+a raw. A 1.9 MP photo takes about 28 s on an eight-core Ryzen 7 7800X3D, against
+half a second on the card. The `da2` models are quicker there -- 18 s for
+`da2-large`, 6 s for `da2-base`, 2 s for `da2-small` -- but they measure nothing,
+so the geometry goes back to being approximate. See [which
 model](#which-model).
 
 ```
@@ -166,7 +168,7 @@ than guessing:
 ```
 holiday.jpg is 11648x8736 (101.8 MP) and needs about 13.0 GB, but only 6.2 GB of memory is free.
 Resizing to 7409x5556 (41.2 MP) would fit -- 64% of the width, 40% of the pixels.
-The side-by-side image would come out about 14522x5556 instead of 22832x8736.
+The side-by-side image would come out about 14370x5556 instead of 22596x8736.
 Resize and convert it, or skip it? [r/s]
 ```
 
@@ -280,8 +282,15 @@ an LGPL ffmpeg carries neither. The order tried is:
 3. **libopenh264**, then MediaFoundation — software, and not GPL
 
 Whichever it lands on, `--crf` still means quality, though the encoders spell it
-differently underneath (`-crf`, `-cq`, `-global_quality`). Nothing is printed
-about the choice, so if you want to know what wrote a file:
+differently underneath (`-crf`, `-cq`, `-global_quality`). Falling past x264 is
+said out loud, since a clip that comes out softer than the last one should not
+look like the app's doing:
+
+```
+clip_sbs.mp4: encoding with h264_nvenc; this ffmpeg has no libx264
+```
+
+To ask a finished file what wrote it:
 
 ```bash
 ffprobe -v error -select_streams v:0 -show_entries stream_tags=encoder -of csv=p=0 clip_sbs.mp4
@@ -295,15 +304,18 @@ into the folder puts x264 back, with no flag to set.
 
 | Clip | Per frame | Per minute of footage |
 | --- | --- | --- |
-| 1280 × 720 | 49 ms | 1.5 min |
-| 1920 × 1080 | 58 ms | 1.7 min |
-| 3840 × 2160 | 144 ms | 4.3 min |
+| 1280 × 720 | 222 ms | 6.7 min |
+| 1920 × 1080 | 238 ms | 7.1 min |
+| 3840 × 2160 | 369 ms | 11.1 min |
 
-On an RTX 4080 Super with the model already loaded — so roughly one and a half to
-four times slower than watching it. The CPU is not really in the running: 1080p
-costs 5.1 s a frame with the large model, which is two and a half hours for a
-minute of footage. `--model base` brings that to 1.7 s and 52 minutes, which is
-the difference between an overnight job and a hopeless one.
+On an RTX 4080 Super with the model already loaded. Depth Anything 3 costs a good
+deal more than the model this used to use, and is asked for more resolution as
+well, so a minute of footage is the better part of ten minutes of work.
+
+The CPU is not really in the running: one 1080p frame takes about 11 s, which is
+five and a half hours for a minute of footage. `--model da2-small` is the only
+combination that finishes in an evening, and gives up the metric geometry to do
+it.
 
 Anything that long is worth being able to watch and to stop. The command line
 rewrites a line with the frame count and an estimate; the window shows the frame

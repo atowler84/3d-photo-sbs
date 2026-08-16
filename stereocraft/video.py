@@ -338,6 +338,13 @@ def _encoder(out, src, clip, geo, cfg, stderr):
         # is a frame worth keeping; a fractionally long soundtrack is harmless.
         args += ["-i", str(src), "-map", "0:v:0", "-map", "1:a:0"]
     encoder, quality, extra = pick_encoder(cfg.codec)
+    if encoder != ENCODERS[cfg.codec][0][0]:
+        # Worth a word.  The preferred encoder is the best of them at a given
+        # size, and falling past it is invisible in the finished file unless
+        # someone thinks to ask ffprobe -- so a clip that came out softer than
+        # the last one would look like the app's fault rather than the ffmpeg's.
+        print(f"{Path(out).name}: encoding with {encoder}; this ffmpeg has no "
+              f"{ENCODERS[cfg.codec][0][0]}", file=sys.stderr)
     args += ["-c:v", encoder, quality, str(cfg.crf), *extra,
              "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     if sound:
