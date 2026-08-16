@@ -5,6 +5,7 @@ does need a display, so the whole file steps aside where there is not one.
 """
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,6 +32,11 @@ def queued(app, monkeypatch, *names):
     """Put files in the queue the way the user does, dialog and all."""
     monkeypatch.setattr(filedialog, "askopenfilenames", lambda **kwargs: names)
     app.add_files()
+
+
+def click(ctrl=False, shift=False):
+    """The bits Tk puts in event.state for the modifier keys."""
+    return SimpleNamespace(state=(0x0004 if ctrl else 0) | (0x0001 if shift else 0))
 
 
 def started(app, monkeypatch):
@@ -137,6 +143,62 @@ class TestWhatIsOffered:
         app.fmt.set("jpg")
         app._refresh_controls()
         assert not self.disabled(app.quality_scale)
+
+
+class TestProgress:
+    """Every bar has a number beside it, and both come from the same place."""
+
+    def test_a_clips_frames_fill_its_own_row(self, app, monkeypatch):
+        queued(app, monkeypatch, "clip.mp4")
+        app.events.put(("frame", (0, 45, 300, "2m10s")))
+        app._drain()
+        assert app.rows[0].percent.cget("text") == "15%"
+        assert app.rows[0].bar.cget("value") == 150  # of a maximum of 1000
+        assert "frame 45/300" in app.rows[0].detail.cget("text")
+
+    def test_a_photo_moves_rather_than_claiming_a_figure(self, app, monkeypatch):
+        """It is over in under a second and has no frames to count, so any
+        percentage would be invented."""
+        queued(app, monkeypatch, "holiday.jpg")
+        app.events.put(("working", 0))
+        app._drain()
+        assert str(app.rows[0].bar.cget("mode")) == "indeterminate"
+        assert app.rows[0].percent.cget("text") == "\u2026"
+
+    def test_a_finished_file_is_full_and_says_so(self, app, monkeypatch, tmp_path):
+        from PIL import Image
+
+        out = tmp_path / "holiday_sbs.png"
+        Image.new("RGB", (80, 30), "navy").save(out)
+        queued(app, monkeypatch, "holiday.jpg")
+        app.events.put(("done", (0, {"output": out, "output_size": (80, 30),
+                                     "resized_from": None, "seconds": 0.8})))
+        app._drain()
+        assert app.rows[0].percent.cget("text") == "100%"
+        assert app.rows[0].bar.cget("value") == 1000
+        assert str(app.rows[0].bar.cget("mode")) == "determinate"
+
+    def test_one_that_went_wrong_claims_nothing(self, app, monkeypatch):
+        queued(app, monkeypatch, "clip.mp4")
+        app.events.put(("error", (0, "clip.mp4: ffmpeg fell over")))
+        app._drain()
+        assert app.rows[0].percent.cget("text") == "\u2013"
+
+    def test_the_main_bar_counts_the_queue_in_percent(self, app, monkeypatch):
+        queued(app, monkeypatch, "one.jpg", "two.jpg", "three.jpg", "four.jpg")
+        app._set_progress(0, maximum=len(app.files))
+        assert app.progress_percent.cget("text") == "0%"
+        app.finished = 1
+        app._set_progress(app.finished)
+        assert app.progress_percent.cget("text") == "25%"
+        # A clip advances it a fraction of a file at a time rather than in jumps.
+        app.events.put(("frame", (1, 150, 300, "")))
+        app._drain()
+        assert app.progress_percent.cget("text") == "38%"
+
+    def test_it_never_divides_by_an_empty_queue(self, app):
+        app._set_progress(0, maximum=0)
+        assert app.progress_percent.cget("text") == "0%"
 
 
 class TestReset:
@@ -252,6 +314,71 @@ class TestTheResultArea:
 
 
 class TestTheQueue:
+    """A row of widgets per file rather than a line of text, so each one can
+    show a bar of its own -- which is what a clip, alone in taking minutes,
+    actually needs."""
+
+    def test_a_row_per_file_saying_which_file(self, app, monkeypatch):
+        queued(app, monkeypatch, "holiday.jpg", "clip.mp4")
+        assert len(app.rows) == 2
+        assert "holiday.jpg" in app.rows[0].name.cget("text")
+        assert "clip.mp4" in app.rows[1].name.cget("text")
+
+    def test_a_long_name_keeps_its_ends(self, app, monkeypatch):
+        """The extension says what the file is, and a batch off a camera differs
+        only in the digits just before it -- so the middle is what goes."""
+        name = "a_very_long_holiday_video_from_the_camera_20260816_143200.mp4"
+        queued(app, monkeypatch, name)
+        shown = app.rows[0].name.cget("text")
+        assert len(shown) < len(name)
+        assert shown.startswith("   a_very_long") and shown.endswith("143200.mp4")
+
+    def test_an_empty_queue_says_so(self, app, monkeypatch):
+        app.root.update()
+        assert app.empty_label.winfo_ismapped()
+        queued(app, monkeypatch, "holiday.jpg")
+        app.root.update()
+        assert not app.empty_label.winfo_ismapped()
+
+    def test_remove_works_from_what_was_clicked(self, app, monkeypatch):
+        queued(app, monkeypatch, "one.jpg", "two.jpg", "three.jpg")
+        app._clicked(app.rows[1], click())
+        assert app.selected == {1}
+        app._clicked(app.rows[2], click(ctrl=True))
+        assert app.selected == {1, 2}
+        app.remove_selected()
+        assert [path.name for path in app.files] == ["one.jpg"]
+        assert len(app.rows) == 1 and not app.selected
+
+    def test_the_wheel_turns_it_from_anywhere_over_it(self, app, monkeypatch):
+        """Including from over a row, which is where the pointer nearly always
+        is -- each row is a widget of its own, and the canvas is behind them."""
+        queued(app, monkeypatch, "one.jpg", "two.jpg", "three.jpg")
+        turned = []
+        monkeypatch.setattr(app.queue_canvas, "yview_scroll",
+                            lambda amount, what: turned.append(amount))
+        # Standing in for the pointer, which a window nobody has shown cannot
+        # have anything under.
+        monkeypatch.setattr(app.root, "winfo_containing", lambda *_: app.rows[1].name)
+        app._wheeled(SimpleNamespace(x_root=0, y_root=0, delta=-120, num=0))
+        app._wheeled(SimpleNamespace(x_root=0, y_root=0, delta=120, num=0))
+        assert turned == [2, -2], "down the queue, then back up it"
+
+    def test_but_not_from_off_it(self, app, monkeypatch):
+        queued(app, monkeypatch, "one.jpg", "two.jpg", "three.jpg")
+        turned = []
+        monkeypatch.setattr(app.queue_canvas, "yview_scroll",
+                            lambda amount, what: turned.append(amount))
+        monkeypatch.setattr(app.root, "winfo_containing", lambda *_: app.canvas)  # the result mat
+        app._wheeled(SimpleNamespace(x_root=0, y_root=0, delta=-120, num=0))
+        assert not turned
+
+    def test_shift_takes_the_run_between(self, app, monkeypatch):
+        queued(app, monkeypatch, "one.jpg", "two.jpg", "three.jpg", "four.jpg")
+        app._clicked(app.rows[0], click())
+        app._clicked(app.rows[2], click(shift=True))
+        assert app.selected == {0, 1, 2}
+
     def test_the_first_file_puts_up_the_tab_that_governs_it(self, app, monkeypatch):
         queued(app, monkeypatch, "clip.mp4")
         assert app.tabs.tab(app.tabs.select(), "text") == "Video"

@@ -89,6 +89,12 @@ nothing is downloaded on first run: the weights ship in `models\da3` beside the
 exe and ffmpeg sits next to it, so both photos and video work on a machine that
 has never seen the internet.
 
+The window has no console of its own, which on Windows means every ffmpeg it
+starts would be given one -- a black box flashing up for the probe and two more
+sitting there for the length of an encode. They are launched with
+`CREATE_NO_WINDOW` instead, so a conversion happens in the window and nowhere
+else.
+
 | switch | |
 | --- | --- |
 | `-Cuda` | build against CUDA Torch: about three times the size, and the difference between 20 seconds a photo and a tenth of one |
@@ -149,11 +155,17 @@ model is loaded once for the lot. The first photo pays the two second load and
 the rest convert in well under a second each.
 
 The window is the queue down the left, the settings and the finished pair on the
-right. The settings are three tabs -- General for what the scene looks like,
-Photo and Video for what each is written as -- and the tab that governs the first
-file added comes up with it. Each tab has its own Reset to default, which puts
-that tab back and leaves the others alone, and goes grey once there is nothing
-left on it to undo.
+right. Each file in the queue is a row of its own with a progress bar and a
+percentage, which is what a clip wants -- it is the only thing here that takes
+minutes -- and underneath it the frame it is on and how long is left. The bar
+across the bottom counts the whole queue, in files and in percent; a photo has
+no frames to count, so its own bar moves rather than inventing a figure.
+
+The settings are three tabs -- General for what the scene looks like, Photo and
+Video for what each is written as -- and the tab that governs the first file
+added comes up with it. Each tab has its own Reset to default, which puts that
+tab back and leaves the others alone, and goes grey once there is nothing left
+on it to undo.
 
 What is not on the window is what there is no judgement in: the model, the
 resolution it runs at, the comfort limit and which device does the work are all

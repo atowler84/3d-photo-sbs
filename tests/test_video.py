@@ -91,6 +91,36 @@ class TestEncoders:
             video.pick_encoder("h264")
 
 
+class TestNoConsole:
+    """Every ffmpeg has to be launched with whatever it takes to keep Windows
+    from giving it a console window of its own: the window has none, so each
+    child would flash a black box up over the screen -- and the encoder's would
+    sit there for the length of the clip."""
+
+    def test_the_probe_asks_for_no_window(self, monkeypatch, clip):
+        seen = {}
+        real = video.subprocess.run
+
+        def watched(args, **kwargs):
+            seen.update(kwargs)
+            return real(args, **kwargs)
+
+        monkeypatch.setattr(video.subprocess, "run", watched)
+        video.probe(clip)
+        assert seen.items() >= video.NO_CONSOLE.items()
+
+    def test_and_so_do_the_two_that_do_the_work(self, monkeypatch, clip, tmp_path):
+        seen = []
+        info = video.probe(clip)  # before Popen is stood on, since it needs it
+        settings = video.VideoSettings()
+        monkeypatch.setattr(video.subprocess, "Popen", lambda args, **kwargs: seen.append(kwargs))
+        video._decoder(clip, info, None, None)
+        video._encoder(tmp_path / "out.mp4", clip, info, video.geometry(info, settings),
+                       settings, None)
+        assert len(seen) == 2
+        assert all(kwargs.items() >= video.NO_CONSOLE.items() for kwargs in seen)
+
+
 class TestTemporalDepth:
     def test_the_first_frame_passes_through(self):
         d = torch.rand(1, 1, 8, 8)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 try:
     import tkinter as tk
-    from tkinter import filedialog, messagebox, ttk
+    from tkinter import filedialog, font as tkfont, messagebox, ttk
 except ImportError:  # pragma: no cover - depends on the Python build
     tk = None
 
@@ -69,6 +69,91 @@ MARKS = {"pending": " ", "working": "\u25b6", "done": "\u2713", "skipped": "\u20
          "failed": "\u2715", "stopped": "\u2013"}
 COLOURS = {"done": "#2e7d32", "skipped": "#8a6d1f", "failed": "#b00020", "working": "#1565c0",
            "stopped": "#8a6d1f"}
+# The queue is a list of files on white, the way a list of files usually is.
+ROW_BG = "#ffffff"
+ROW_SELECTED = "#cde4ff"
+ROW_FG = "#202020"
+QUEUE_WIDTH = 340
+# Long names lose their middle rather than their end: the extension is the half
+# that says what the file is, and a batch off a camera differs only in the digits
+# just before it.
+NAME_CHARS = 36
+QUEUE_EMPTY = "Nothing queued.\n\nAdd photos or videos\nand they appear here."
+
+
+class Row:
+    """One file in the queue: what it is, how far through it is, how it went.
+
+    A Listbox line could hold none of this.  A clip is the one thing here that
+    takes minutes rather than a moment, and what it wants is a bar creeping
+    along, so every file gets a small frame of widgets of its own instead.
+    """
+
+    def __init__(self, parent, small, on_click):
+        self.frame = tk.Frame(parent, background=ROW_BG, padx=8, pady=5)
+        self.frame.columnconfigure(0, weight=1)
+        self.name = tk.Label(self.frame, background=ROW_BG, anchor="w")
+        self.name.grid(row=0, column=0, sticky="ew")
+        self.percent = tk.Label(self.frame, background=ROW_BG, anchor="e", width=5,
+                                foreground="#555", font=small)
+        self.percent.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self.bar = ttk.Progressbar(self.frame, style="Queue.Horizontal.TProgressbar",
+                                   maximum=1000)
+        self.bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        self.detail = tk.Label(self.frame, background=ROW_BG, anchor="w", foreground="#777",
+                               font=small)
+        self.detail.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self._spinning = False
+        for widget in (self.frame, self.name, self.percent, self.detail):
+            widget.bind("<Button-1>", lambda event: on_click(self, event))
+
+    @staticmethod
+    def _fit(name):
+        if len(name) <= NAME_CHARS:
+            return name
+        keep = NAME_CHARS - 1
+        return f"{name[:keep // 2]}\u2026{name[-(keep - keep // 2):]}"
+
+    def show(self, name, state, detail, fraction):
+        """`fraction` of None means nobody knows -- which for a file being worked
+        on is a photo, too quick to measure, and gets a bar that simply moves."""
+        self.name.config(text=f"{MARKS[state]}  {self._fit(name)}",
+                         foreground=COLOURS.get(state, ROW_FG))
+        self.detail.config(text=detail)
+        self.detail.grid() if detail else self.detail.grid_remove()
+        if state == "working" and fraction is None:
+            self._spin(True)
+        else:
+            self._spin(False)
+            if fraction is not None:
+                self.bar.config(value=round(fraction * 1000))
+        if state in ("skipped", "failed", "stopped"):
+            self.percent.config(text="\u2013")
+        elif state == "pending":
+            self.percent.config(text="")
+        else:  # ... for a file being worked on that cannot say how far along
+            self.percent.config(text=f"{fraction:.0%}" if fraction is not None else "\u2026")
+
+    def _spin(self, on):
+        """A bar with nothing to report moves rather than stands still, which is
+        the difference between working and hung."""
+        if on == self._spinning:
+            return
+        self._spinning = on
+        if on:
+            self.bar.config(mode="indeterminate", value=0)
+            self.bar.start(40)
+        else:
+            self.bar.stop()
+            self.bar.config(mode="determinate")
+
+    def select(self, on):
+        colour = ROW_SELECTED if on else ROW_BG
+        for widget in (self.frame, self.name, self.percent, self.detail):
+            widget.config(background=colour)
+
+    def destroy(self):
+        self.frame.destroy()
 
 
 class App:
@@ -91,13 +176,21 @@ class App:
 
         root.title("StereoCraft - side-by-side 3D")
         self._set_icon(root)
-        root.minsize(960, 720)
+        root.minsize(1060, 720)
+        # A size below the default for the second line of a queue row and the
+        # explanations under the settings, asked of the theme rather than named,
+        # so it follows whatever the machine's own size is.
+        self.small_font = tkfont.nametofont("TkDefaultFont").copy()
+        self.small_font.configure(size=max(7, abs(self.small_font.cget("size")) - 1))
+        # Thin, because there is one of these on every row of the queue and a
+        # full-height bar would make each file twice as tall as it needs to be.
+        ttk.Style().configure("Queue.Horizontal.TProgressbar", thickness=8)
         frame = ttk.Frame(root, padding=12)
         frame.pack(fill="both", expand=True)
         # The queue keeps a fixed width and everything else takes the slack:
         # file names are all much of a length, whereas the result is what has
         # something to do with every extra pixel.
-        frame.columnconfigure(0, minsize=250)
+        frame.columnconfigure(0, minsize=QUEUE_WIDTH + 24)
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(0, weight=1)
 
@@ -119,8 +212,10 @@ class App:
         self.stop_button.grid(row=0, column=1, padx=(6, 0))
         self.progress = ttk.Progressbar(footer, mode="determinate")
         self.progress.grid(row=0, column=2, sticky="ew", padx=8)
+        self.progress_percent = ttk.Label(footer, text="0%", width=5, anchor="e")
+        self.progress_percent.grid(row=0, column=3, sticky="e")
         self.status = ttk.Label(footer, text="Add a photo or a video to begin")
-        self.status.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.status.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         # Every setting a Reset would put back.  Watching all of them is what
         # tells each tab's button whether it has anything left to undo, and the
@@ -177,29 +272,42 @@ class App:
         self.clear_button = ttk.Button(buttons, text="Clear", command=self.clear)
         self.clear_button.pack(side="left")
 
-        rows = ttk.Frame(box)
-        rows.grid(row=1, column=0, sticky="nsew")
-        rows.columnconfigure(0, weight=1)
-        rows.rowconfigure(0, weight=1)
-        # exportselection off, or clicking anything else on the window takes the
-        # X selection away and silently empties this one -- which would disable
-        # Remove out from under a photo the user can still see highlighted.
-        self.listbox = tk.Listbox(rows, width=28, height=12, selectmode="extended",
-                                  activestyle="none", exportselection=False,
-                                  borderwidth=1, relief="solid", highlightthickness=0)
-        self.listbox.grid(row=0, column=0, sticky="nsew")
+        # A frame of widgets inside a canvas is Tk's way of having a list that
+        # scrolls and holds more than text.
+        area = ttk.Frame(box)
+        area.grid(row=1, column=0, sticky="nsew")
+        area.columnconfigure(0, weight=1)
+        area.rowconfigure(0, weight=1)
+        self.queue_canvas = tk.Canvas(area, background=ROW_BG, width=QUEUE_WIDTH,
+                                      highlightthickness=1, highlightbackground="#b5b5b5",
+                                      borderwidth=0)
+        self.queue_canvas.grid(row=0, column=0, sticky="nsew")
+        self.rows_frame = tk.Frame(self.queue_canvas, background=ROW_BG)
+        held = self.queue_canvas.create_window((0, 0), window=self.rows_frame, anchor="nw")
+        self.rows_frame.bind("<Configure>", lambda *_: self.queue_canvas.config(
+            scrollregion=self.queue_canvas.bbox("all")))
+        # The rows are as wide as the canvas rather than as wide as their
+        # contents, so a long name is clipped instead of widening the window.
+        self.queue_canvas.bind("<Configure>", lambda event: self.queue_canvas.itemconfigure(
+            held, width=event.width))
         # A tall list is a list worth scrolling, and the bar only appears once
         # there is more in the queue than fits.
-        scroll = ttk.Scrollbar(rows, orient="vertical", command=self.listbox.yview)
-        self.listbox.config(yscrollcommand=lambda first, last: self._scrollbar(scroll, first, last))
-        self.listbox.bind("<<ListboxSelect>>", lambda *_: self._refresh_controls())
-        self._row_fg = self.listbox.cget("foreground") or "black"
+        scroll = ttk.Scrollbar(area, orient="vertical", command=self.queue_canvas.yview)
+        self.queue_canvas.config(
+            yscrollcommand=lambda first, last: self._scrollbar(scroll, first, last))
+        # The wheel is caught for the whole window and acted on only over the
+        # queue.  Binding it to the canvas instead would miss: every row is a
+        # widget in its own right, and the pointer is almost always on one of
+        # them rather than on the canvas behind.
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.bind_all(sequence, self._wheeled)
 
-        ttk.Button(box, text="Output folder...", command=self.pick_output).grid(
-            row=2, column=0, sticky="w", pady=(8, 0))
-        self.dest_label = ttk.Label(box, text="Saving beside each file", foreground="#777",
-                                    wraplength=220)
-        self.dest_label.grid(row=3, column=0, sticky="w", pady=(2, 0))
+        self.rows = []
+        self.selected = set()
+        self.anchor = None  # where a shift-click measures its run from
+        self.empty_label = tk.Label(self.rows_frame, text=QUEUE_EMPTY, background=ROW_BG,
+                                    foreground="#8a8a8a", justify="center", pady=28)
+        self._show_empty()
 
     @staticmethod
     def _scrollbar(scroll, first, last):
@@ -209,6 +317,54 @@ class App:
             scroll.grid_remove()
         else:
             scroll.grid(row=0, column=1, sticky="ns", padx=(2, 0))
+
+    def _wheeled(self, event):
+        """Turn the queue, if the queue is what the pointer is over."""
+        under = self.root.winfo_containing(event.x_root, event.y_root)
+        if under is None or not str(under).startswith(str(self.queue_canvas)):
+            return
+        # Windows and macOS send a delta, X11 sends button 4 or 5 instead.
+        up = event.num == 4 if getattr(event, "num", 0) in (4, 5) else event.delta > 0
+        self.queue_canvas.yview_scroll(-2 if up else 2, "units")
+
+    def _clicked(self, row, event):
+        """Click for one, ctrl-click to add to the selection, shift-click for a
+        run of them: what the list this replaced did, since Remove works from it."""
+        index = self.rows.index(row)
+        if event.state & 0x0004:  # ctrl
+            self.selected ^= {index}
+        elif event.state & 0x0001 and self.anchor is not None:  # shift
+            first, last = sorted((self.anchor, index))
+            self.selected = set(range(first, last + 1))
+        else:
+            self.selected = {index}
+        if not event.state & 0x0001:
+            self.anchor = index
+        self._paint_selection()
+        self._refresh_controls()
+
+    def _paint_selection(self):
+        for index, row in enumerate(self.rows):
+            row.select(index in self.selected)
+
+    def _show_empty(self):
+        """A queue with nothing in it says so, rather than being a white void."""
+        if self.files:
+            self.empty_label.pack_forget()
+        else:
+            self.empty_label.pack(fill="x")
+
+    def _see(self, index):
+        """Scroll a row into view, for following a long batch down the queue."""
+        self.queue_canvas.update_idletasks()
+        total = self.rows_frame.winfo_height()
+        row = self.rows[index].frame
+        if total <= 0 or not row.winfo_ismapped():
+            return
+        first, last = self.queue_canvas.yview()
+        top, bottom = row.winfo_y() / total, (row.winfo_y() + row.winfo_height()) / total
+        if top < first or bottom > last:
+            self.queue_canvas.yview_moveto(max(0.0, top - 0.02))
 
     def _build_settings(self, parent):
         """The settings, as three tabs of what they apply to.
@@ -487,11 +643,15 @@ class App:
             if path not in self.files:
                 self.files.append(path)
                 self.states.append(("pending", ""))
-                self.listbox.insert("end", self._row_label(len(self.files) - 1))
+                row = Row(self.rows_frame, self.small_font, self._clicked)
+                row.frame.pack(fill="x")
+                self.rows.append(row)
+                self._set_row(len(self.files) - 1, "pending")
         # Opening a queue puts up the tab that has something to say about it.
         # Only the first time, so a tab chosen since is not taken away again.
         if first and self.files:
             self.tabs.select(self.video_tab if is_video(self.files[0]) else self.photo_tab)
+        self._show_empty()
         moved = self._sync_recommendation()
         self._refresh_status()
         if moved:
@@ -499,42 +659,43 @@ class App:
                                     f"{moved[0]:.0f}mm for video")
 
     def remove_selected(self):
-        for index in sorted(self.listbox.curselection(), reverse=True):
-            self.listbox.delete(index)
+        for index in sorted(self.selected, reverse=True):
+            self.rows.pop(index).destroy()
             del self.files[index]
             del self.states[index]
+        self.selected.clear()
+        self.anchor = None
+        self._paint_selection()
+        self._show_empty()
         self._sync_recommendation()
         self._refresh_status()
 
     def clear(self):
-        self.listbox.delete(0, "end")
+        for row in self.rows:
+            row.destroy()
+        self.rows.clear()
+        self.selected.clear()
+        self.anchor = None
         self.files.clear()
         self.states.clear()
+        self._show_empty()
         self._sync_recommendation()
         self._refresh_status()
         self._clear_result()
 
-    def _row_label(self, index):
-        state, detail = self.states[index]
-        label = f"{MARKS[state]}  {self.files[index].name}"
-        return f"{label}   {detail}" if detail else label
+    def _set_row(self, index, state, detail="", fraction=None):
+        """Bring one file's row up to date.
 
-    def _set_row(self, index, state, detail=""):
-        """Rewrite one row of the queue.
-
-        A Listbox cannot have a line changed in place, so it goes out and comes
-        back -- and takes its selection with it, which the user would otherwise
-        watch vanish as their batch runs.
+        `fraction` left out means the state decides: nothing done, everything
+        done, or -- for a file being worked on with no frames to count -- nobody
+        knows, which is a bar that moves rather than one that fills.
         """
         self.states[index] = (state, detail)
-        selected = index in self.listbox.curselection()
-        self.listbox.delete(index)
-        self.listbox.insert(index, self._row_label(index))
-        self.listbox.itemconfig(index, foreground=COLOURS.get(state, self._row_fg))
-        if selected:
-            self.listbox.selection_set(index)
+        if fraction is None:
+            fraction = {"pending": 0.0, "done": 1.0}.get(state)
+        self.rows[index].show(self.files[index].name, state, detail, fraction)
         if state == "working":
-            self.listbox.see(index)  # follow a long batch down the list
+            self._see(index)  # follow a long batch down the queue
 
     def _refresh_controls(self):
         """Offer only what there is currently something to do with."""
@@ -543,7 +704,7 @@ class App:
             (self.add_button, idle),
             # A batch works from the list as it stood when Convert was pressed,
             # so the list stays put until it has finished with it.
-            (self.remove_button, idle and bool(self.listbox.curselection())),
+            (self.remove_button, idle and bool(self.selected)),
             (self.clear_button, idle and bool(self.files)),
             *((button, not at_default()) for button, at_default in self._resets),
             (self.stop_button, self.running and not self.cancel.is_set()),
@@ -555,6 +716,13 @@ class App:
             (self.quality_scale, self.fmt.get() != "png"),
         ):
             button.state(["!disabled"] if usable else ["disabled"])
+
+    def _set_progress(self, value, maximum=None):
+        """The bar and the number beside it, which only ever move together."""
+        if maximum is not None:
+            self.progress.config(maximum=max(1, maximum))
+        self.progress.config(value=value)
+        self.progress_percent.config(text=f"{value / float(self.progress.cget('maximum')):.0%}")
 
     def pick_output(self):
         folder = filedialog.askdirectory(title="Choose an output folder")
@@ -592,7 +760,7 @@ class App:
             self._set_row(index, "pending")  # a re-run starts everything over
         self._refresh_controls()
         self._clear_result("Converting...")
-        self.progress.config(maximum=len(self.files), value=0)
+        self._set_progress(0, maximum=len(self.files))
         automatic = self.automatic.get()
         common = dict(
             eyes_mm="auto" if automatic else round(self.eyes.get(), 1),
@@ -735,11 +903,12 @@ class App:
                 index, done, total, left = payload
                 share = f"{done}/{total}" if total else f"{done}"
                 self._set_row(index, "working",
-                              f"frame {share}{f' - {left} left' if left else ''}")
+                              f"frame {share}{f' - {left} left' if left else ''}",
+                              fraction=done / total if total else None)
                 # The bar runs across the whole queue, and a clip advances it a
                 # fraction of a file at a time rather than jumping at the end.
                 if total:
-                    self.progress.config(value=self.finished + done / total)
+                    self._set_progress(self.finished + done / total)
             elif kind == "preview":
                 from PIL import ImageTk
 
@@ -747,18 +916,18 @@ class App:
                 self._show_result(ImageTk.PhotoImage(image), caption)
             elif kind == "stopped":
                 self.finished += 1
-                self.progress.config(value=self.finished)
+                self._set_progress(self.finished)
                 self._set_row(payload, "stopped", "stopped")
             elif kind == "skipped":
                 index, photo = payload
                 self.finished += 1
-                self.progress.config(value=self.finished)
+                self._set_progress(self.finished)
                 self._set_row(index, "skipped", "too large - skipped")
                 self.status.config(text=f"Skipped {photo.name} - too large for memory")
             elif kind == "done":
                 index, info = payload
                 self.finished += 1
-                self.progress.config(value=self.finished)  # step() wraps to 0 at the end
+                self._set_progress(self.finished)
                 width, height = info["output_size"]
                 was = info["resized_from"]
                 note = f"  (resized from {was[0]}x{was[1]})" if was else ""

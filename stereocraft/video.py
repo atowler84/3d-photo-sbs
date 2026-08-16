@@ -37,6 +37,12 @@ from .depth import _app_dir
 from .pipeline import OUT_OF_MEMORY, Converter, VideoSettings
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mts", ".m2ts", ".wmv", ".flv"}
+# A child of a windowed Windows app is given a console window of its own, so
+# every ffmpeg this runs would flash a black box over whatever the screen was
+# showing -- one for the probe, and two that stay up for the whole encode.
+# Harmless and horrible; the flag says to give it no window at all.
+NO_CONSOLE = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+              if sys.platform == "win32" else {})
 
 # Audio an mp4 will carry as it stands.  Anything else is re-encoded, which is a
 # generation of loss on the soundtrack but beats refusing the file.
@@ -83,7 +89,7 @@ def available_encoders():
     global _ENCODERS_SEEN
     if _ENCODERS_SEEN is None:
         result = subprocess.run([_tool("ffmpeg"), "-hide_banner", "-encoders"],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, **NO_CONSOLE)
         _ENCODERS_SEEN = {line.split()[1] for line in result.stdout.splitlines()
                           if line.startswith(" ") and len(line.split()) > 1}
     return _ENCODERS_SEEN
@@ -164,7 +170,7 @@ def probe(path):
     result = subprocess.run(
         [_tool("ffprobe"), "-v", "error", "-print_format", "json",
          "-show_streams", "-show_format", str(path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, **NO_CONSOLE,
     )
     if result.returncode != 0:
         raise ValueError(f"{Path(path).name} could not be read: {result.stderr.strip()}")
@@ -320,7 +326,8 @@ def _decoder(src, clip, size, stderr):
     if size is not None:
         args += ["-vf", f"scale={size[0]}:{size[1]}"]
     args += ["-fps_mode", "cfr", "-r", f"{clip.fps}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
-    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=stderr, bufsize=0)
+    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=stderr, bufsize=0,
+                            **NO_CONSOLE)
 
 
 def _encoder(out, src, clip, geo, cfg, stderr):
@@ -353,7 +360,8 @@ def _encoder(out, src, clip, geo, cfg, stderr):
         args += (["-c:a", "copy"] if clip.audio in COPYABLE_AUDIO
                  else ["-c:a", "aac", "-b:a", "192k"])
     args.append(str(out))
-    return subprocess.Popen(args, stdin=subprocess.PIPE, stderr=stderr, bufsize=0)
+    return subprocess.Popen(args, stdin=subprocess.PIPE, stderr=stderr, bufsize=0,
+                            **NO_CONSOLE)
 
 
 def _decode_size(converter, src, clip):
