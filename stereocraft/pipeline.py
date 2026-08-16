@@ -217,6 +217,10 @@ class Converter:
     def __init__(self, settings=None):
         self.settings = settings or Settings()
         self._depth = None
+        # Eye separation and screen plane the last frame was rendered with.  Worth
+        # keeping because `auto` picks them per scene, and a result that is too
+        # strong or too flat is hard to correct without knowing where it started.
+        self.chose = (None, None)
 
     @property
     def depth_model(self):
@@ -347,6 +351,7 @@ class Converter:
         eyes, focus = self.geometry(inverse, width, focal_full)
         half = stereo.half_disparity(inverse, focal_full, eyes, focus, cfg.limit_pct, width)
         left, right = stereo.make_pair(rgb, half, margin)
+        self.chose = (eyes, focus)  # what `auto` settled on, for whoever reports it
         return left, right, inverse
 
     def _run(self, src, dst, size=None):
@@ -393,6 +398,8 @@ class Converter:
             "source_size": (width, height),
             "resized_from": photo_size(src) if size else None,
             "output_size": (sbs.shape[2], sbs.shape[1]),
+            "eyes_mm": self.chose[0],
+            "focus_m": self.chose[1],
             "seconds": time.perf_counter() - started,
         }
 

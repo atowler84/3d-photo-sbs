@@ -103,11 +103,11 @@ class App:
         self._build_settings(frame)
 
         self.canvas = tk.Label(frame, background="#1b1b1b", anchor="center")
-        self.canvas.grid(row=3, column=0, sticky="nsew", pady=(8, 8))
-        frame.rowconfigure(3, weight=2)
+        self.canvas.grid(row=6, column=0, sticky="nsew", pady=(8, 8))
+        frame.rowconfigure(6, weight=2)
 
         footer = ttk.Frame(frame)
-        footer.grid(row=4, column=0, sticky="ew")
+        footer.grid(row=7, column=0, sticky="ew")
         footer.columnconfigure(2, weight=1)
         self.convert_button = ttk.Button(footer, text="Convert", command=self.start)
         self.convert_button.grid(row=0, column=0)
@@ -182,11 +182,39 @@ class App:
                         variable=self.cross).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Checkbutton(box, text="Also save the depth map", variable=self.save_depth).grid(
             row=5, column=0, columnspan=3, sticky="w")
+        self._build_video_settings(parent)
         ttk.Checkbutton(box, text="Match the scene automatically (recommended)",
                         variable=self.automatic, command=self._refresh_controls).grid(
                             row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.reset_button = ttk.Button(box, text="Reset to recommended", command=self.reset_settings)
         self.reset_button.grid(row=7, column=0, sticky="w", pady=(8, 0))
+
+    def _build_video_settings(self, parent):
+        """The three that only mean anything once the picture moves.
+
+        Kept in their own box rather than mixed in with the sliders above: those
+        two are about what the scene looks like, these are about what a clip
+        costs to look at for several minutes.
+        """
+        box = ttk.LabelFrame(parent, text="Video", padding=8)
+        box.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        box.columnconfigure(1, weight=1)
+
+        self.target = tk.DoubleVar(value=VideoSettings.target_pct)
+        self.temporal = tk.DoubleVar(value=VideoSettings.temporal)
+        self.codec = tk.StringVar(value=VideoSettings.codec)
+
+        self._slider(box, 0, "Depth", self.target, 0.4, 3.0, "{:.1f}%",
+                     "How much separation a clip aims for. Lower than a photo on purpose:"
+                     " an error you would not notice in a still shimmers once it moves.")
+        self._slider(box, 2, "Steadiness", self.temporal, 0.0, 0.95, "{:.2f}",
+                     "How much of each frame's depth carries into the next. Higher is"
+                     " calmer and very slightly softer; 0 turns it off.")
+        row = ttk.Frame(box)
+        row.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(row, text="Codec").pack(side="left")
+        for value, text in (("h264", "H.264 (plays anywhere)"), ("hevc", "HEVC (better above 4K)")):
+            ttk.Radiobutton(row, text=text, value=value, variable=self.codec).pack(side="left", padx=(8, 0))
 
     def _slider(self, parent, row, label, variable, low, high, fmt, hint):
         """`fmt` is a format string, or a callable for a value the slider does not
@@ -352,7 +380,10 @@ class App:
             cross_eyed=self.cross.get(),
             on_oversize=self._ask_oversize,
         )
-        settings = (Settings(save_depth=self.save_depth.get(), **common), VideoSettings(**common))
+        settings = (Settings(save_depth=self.save_depth.get(), **common),
+                    VideoSettings(target_pct=round(self.target.get(), 2),
+                                  temporal=round(self.temporal.get(), 2),
+                                  codec=self.codec.get(), **common))
         threading.Thread(target=self._work, args=(list(self.files), self.output_dir, settings),
                          daemon=True).start()
 

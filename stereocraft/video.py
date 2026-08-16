@@ -431,6 +431,19 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
     if size is not None:
         clip = Clip(size[0], size[1], clip.fps, clip.frames, clip.duration, clip.audio)
 
+    if converter.depth_model.device.type == "cpu":
+        # Roughly five and a half seconds per megapixel of network input, measured
+        # on an eight-core desktop.  Rough is enough: the point is to say "hours"
+        # before someone finds out by waiting, not to be right to the minute.
+        work = converter.depth_model.working_size(clip.height, clip.width, cfg.depth_size)
+        each = 5.4 * work[0] * work[1] / 1e6
+        total = each * (clip.frames or 1)
+        if total > 600:
+            print(f"{src.name}: this is a CPU conversion -- about {each:.0f}s a frame, so "
+                  f"{clock(total)} for {clip.frames} frames. A graphics card does it in "
+                  f"minutes, and --model da2-small is the quickest way through without one.",
+                  file=sys.stderr)
+
     geo = geometry(clip, cfg)
     out = output_path(src, dst)
     out.parent.mkdir(parents=True, exist_ok=True)

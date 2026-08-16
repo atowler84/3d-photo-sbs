@@ -280,7 +280,11 @@ def main(argv=None):
             taken = clock(info["seconds"])
         else:
             taken = f"{info['seconds']:.1f}s"
-        print(f"{prefix}{info['output']}  {width}x{height}{note}  {taken}")
+        # What the geometry came out as.  `auto` picks it per scene, so without
+        # this there is nothing to adjust from when a result wants tuning.
+        eyes, focus = info.get("eyes_mm"), info.get("focus_m")
+        chose = f"  {eyes:.0f}mm@{focus:.1f}m" if eyes else ""
+        print(f"{prefix}{info['output']}  {width}x{height}{chose}{note}  {taken}")
     if skipped:
         print(f"{skipped} file{'s' if skipped > 1 else ''} skipped as too large", file=sys.stderr)
     return 1 if failures else 0

@@ -99,15 +99,6 @@ has never seen the internet.
 | `-Python <path>` | which `python.exe` to build with; found on its own otherwise |
 | `-TorchIndex cu130` | a different CUDA build of Torch. The default `cu126` runs on any driver from 525 up, where `cu130` wants 580 or newer. All three of `cu126`, `cu128` and `cu130` publish wheels for Python 3.14 |
 
-The ffmpeg it fetches is the **LGPL** build, chosen so the finished folder can be
-handed to anyone -- the usual "essentials" build is compiled `--enable-gpl` for
-x264 and x265. The cost is that x264 is not in there, so video encodes on the
-graphics card instead, or on a non-GPL software encoder. That is a little worse
-per byte, and invisible unless you look. Copying a GPL `ffmpeg.exe` and
-`ffprobe.exe` over the ones in the folder restores x264 immediately and needs no
-flag -- worth doing for your own use, worth undoing before passing the folder on.
-See [which encoder does the writing](#which-encoder-does-the-writing).
-
 With `-SkipZip` the app is left in `dist-<flavour>\StereoCraft` under the build
 folder, ready to copy wherever it is going to live. Move it somewhere of its own
 before building again, because the next build overwrites that folder.
@@ -296,9 +287,8 @@ To ask a finished file what wrote it:
 ffprobe -v error -select_streams v:0 -show_entries stream_tags=encoder -of csv=p=0 clip_sbs.mp4
 ```
 
-The portable Windows build ships an LGPL ffmpeg, so it uses the graphics card
-rather than x264 — see [a Windows app](#a-windows-app). Dropping a GPL ffmpeg
-into the folder puts x264 back, with no flag to set.
+The Windows build ships a GPL ffmpeg, so x264 is there and this rarely comes up.
+It matters on a machine whose ffmpeg was built without it.
 
 ### How long it takes
 
@@ -315,7 +305,12 @@ well, so a minute of footage is the better part of ten minutes of work.
 The CPU is not really in the running: one 1080p frame takes about 11 s, which is
 five and a half hours for a minute of footage. `--model da2-small` is the only
 combination that finishes in an evening, and gives up the metric geometry to do
-it.
+it. A clip that is going to take more than ten minutes says so before it starts
+rather than letting you find out:
+
+```
+clip.mp4: this is a CPU conversion -- about 6s a frame, so 11m51s for 120 frames.
+```
 
 Anything that long is worth being able to watch and to stop. The command line
 rewrites a line with the frame count and an estimate; the window shows the frame
@@ -383,6 +378,17 @@ big you want to feel, not an approximation.
 - **Target** (`--target`) — what `auto` aims for, as a percentage of frame width.
   The one to reach for if the whole thing is too strong or too flat: it keeps the
   geometry and changes only how much of it there is.
+
+Whatever it settles on is printed alongside the output, because there is no
+guessing it otherwise:
+
+```
+photo_sbs.jpg  2008x768  56mm@2.1m  0.2s
+```
+
+That is 56mm eyes with the screen plane at 2.1m — a car at conversational
+distance. A macro comes out nearer 9mm, a landscape several hundred. It is the
+number to start from when you want to pin one yourself.
 
 ### Which model
 
@@ -496,38 +502,14 @@ that guesses wrong has a setting for it.
 
 MIT, see [LICENSE](LICENSE).
 
-The depth weights are downloaded at runtime rather than shipped here, and carry
-their own terms. The default is the permissive one, which it did not use to be:
-**DA3METRIC-LARGE is Apache-2.0**, as is Depth-Anything V2 Small. Only the V2
-Base and Large fallbacks are CC BY-NC 4.0, and those are not licensed for
-commercial use — `-Models da2-large` puts one of them back in the folder.
+StereoCraft is MIT. Everything it depends on is Apache-2.0, BSD or MIT, with two
+exceptions worth knowing about if this folder is ever handed to anyone: the
+bundled **ffmpeg is the GPL build**, chosen for x264 and x265, and **pillow-heif
+bundles libx265** in its wheel whether or not anything writes HEIC. The default
+depth weights are Apache-2.0; the `da2-base` and `da2-large` fallbacks are
+CC BY-NC 4.0 and not licensed for commercial use.
 
-Everything else in a default build is permissive too, which took some arranging:
-
-| | |
-| --- | --- |
-| StereoCraft | MIT |
-| DA3METRIC-LARGE weights, depth-anything-3, transformers, OpenCV, safetensors, huggingface-hub | Apache-2.0 |
-| Torch, torchvision, NumPy, pandas, pillow-heif, OmegaConf | BSD |
-| Pillow | MIT-CMU |
-| imageio | BSD-2 |
-| einops | MIT |
-| tqdm | MPL-2.0 and MIT |
-| ffmpeg (bundled) | LGPL v3 |
-
-Two things were deliberately kept out. **`evo` is GPL-3.0** — DA3 imports it to
-align camera poses, which a monocular app never does, so the module that reaches
-for it is stubbed and `evo` is excluded from the build. And the ffmpeg that ships
-is the **LGPL** build rather than the usual "essentials" one, which is compiled
-`--enable-gpl` for x264 and x265. That costs the x264 encoder; the app falls to
-the graphics card or to a non-GPL software encoder without being asked.
-
-Dropping a GPL ffmpeg into the folder yourself restores x264 and is picked up
-automatically — a reasonable thing to do for your own use, and a thing to think
-about before redistributing.
-
-`addict` states no licence in its metadata; worth confirming before you rely on
-any of this. None of the above is legal advice.
+For using it yourself none of that matters, and none of it is legal advice.
 
 This repository began as a fork of
 [3D-Photo-Inpainting](https://github.com/vt-vl-lab/3d-photo-inpainting) by way of
