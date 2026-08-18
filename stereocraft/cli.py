@@ -118,8 +118,14 @@ def build_parser():
                              "angular scale instead -- more immersive where the photo reaches, "
                              "and dark where it does not, which is most of it")
     parser.add_argument("--vr180-size", type=int, default=None, metavar="PX",
-                        help="per-eye square for --projection vr180. (default: as much of the "
-                             "photo's own detail as fits under 4096 for a photo, 2048 for a clip)")
+                        help="stored width per eye for --projection vr180. Only the piece of "
+                             "sphere the picture covers is stored, so this buys picture rather "
+                             "than dark. (default: the source's own width, capped at 4096 for a "
+                             "photo and 2048 for a clip)")
+    parser.add_argument("--vr180-full", action="store_true",
+                        help="write the whole 180-degree square instead of the piece that "
+                             "exists, dark and all. Costs most of the resolution, and is only "
+                             "for a player that reads neither GPano nor the projection bounds")
     parser.add_argument("--cross", action="store_true", help="write right|left for cross-eyed viewing")
     parser.add_argument("--max-size", type=int, default=0, help="cap the output width, 0 for native")
     parser.add_argument("--format", choices=("auto", "jpg", "png"), default="auto", dest="fmt")
@@ -196,6 +202,7 @@ def settings_for(args, video):
         cross_eyed=args.cross,
         device=args.device,
         projection=args.projection,
+        vr180_full=args.vr180_full,
         on_oversize=oversize_handler(args.oversize),
     )
     if video:
@@ -258,14 +265,14 @@ def main(argv=None):
 
     # One converter for the batch either way, so the depth model is loaded once;
     # only the settings on it change as the run moves between stills and clips.
-    if args.projection == "vr180":
-        # The name is doing the work an st3d/sv3d box should be doing, and it
-        # does it well enough for most players -- but "most" is worth saying out
-        # loud, because the failure is a picture that looks fine and is wrong.
-        print("vr180: written as _180_sbs, which most players read as "
-              "equirectangular 180, side-by-side. Nothing inside the file says "
-              "so, so one that guesses wrong has to be set by hand.",
-              file=sys.stderr)
+    if args.projection == "vr180" and not args.vr180_full:
+        # A cropped patch that is not understood is not shown small, it is shown
+        # stretched across the whole sphere -- so the one thing worth saying up
+        # front is which way out it goes wrong, and what to do about it.
+        print("vr180: only the part of the sphere the picture covers is stored, "
+              "with GPano (photos) and projection bounds (clips) to say where it "
+              "belongs. A player that reads neither will stretch it -- use "
+              "--vr180-full for that.", file=sys.stderr)
     converter = Converter(settings_for(args, video=False))
     for_photos, for_videos = converter.settings, settings_for(args, video=True)
     failures = skipped = 0
@@ -310,7 +317,9 @@ def main(argv=None):
         # never pointed at.  The single most useful number about the result, and
         # the one nobody would think to ask for until they had put it on.
         if info.get("coverage") is not None:
-            chose += f"  {info['coverage']:.0%} real"
+            chose += f"  {info['coverage']:.0%} of a sphere"
+            if info.get("marked") is False:
+                chose += " (unlabelled)"
             # On a plane a wrong lens only rescales the scene and the focus
             # distance absorbs it.  On a sphere it decides where every pixel
             # lands in angle, so a guessed one means a picture at the wrong

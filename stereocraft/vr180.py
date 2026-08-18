@@ -5,16 +5,18 @@ the player is free to make that screen whatever size it likes.  VR180 is the
 other arrangement: the picture is mapped onto the inside of a hemisphere at a
 fixed angular scale, so something that subtended thirty degrees to the camera
 subtends thirty degrees to the viewer.  That is the whole gain, and it is a real
-one -- but it is paid for in periphery, because a photograph does not have any.
+one -- but a photograph has no periphery to put in the rest of the sphere.
 
-**What the container asks for, and what a photograph brings.**  VR180 is 180
-degrees across and 180 degrees tall, an equirectangular half-sphere, square per
-eye.  A 28mm phone lens covers 65 by 51 degrees, which is 15% of that hemisphere
-by solid angle.  The other 85% is not dark because this module gave up on it: it
-is dark because nothing was ever pointed at it.  `render` hands back the mask of
-what is real so the caller can say so out loud, and fades the edge rather than
-cutting it, on the grounds that an honest absence reads better in a headset than
-a hard-edged rectangle floating in a void.
+**Only the piece that exists is stored.**  A rectilinear frame covers exactly its
+own field of view: the azimuth a column lands at is atan(u/f), which does not
+depend on the row, so the patch of sphere a photograph occupies is its own
+angles and finding it needs no search.  Writing the whole 180-degree square
+instead would spend almost all of it on dark -- a 28mm phone lens fills 15% of a
+hemisphere and a 49mm lens 5%, so at 4096 pixels a side the picture itself would
+come back 918 pixels wide with fifteen megapixels of black around it.  So the
+patch is stored and `spherical` records where on the sphere it belongs, which is
+what `CroppedAreaLeftPixels` and the equirectangular projection bounds are both
+for.  `full` writes the whole square anyway, for a player that reads neither.
 
 **Where the depth comes from.**  The depth model runs on the photograph, before
 any of this.  It is trained on ordinary perspective images and an equirectangular
@@ -40,20 +42,16 @@ addition is a cosine taper towards the poles, where the separation has to fall
 to nothing: looking straight up there is no "across the line of sight" left to
 put two eyes on, and insisting on some anyway is what makes badly made VR180
 hurt to look at.
-
-**No metadata is written here.**  A finished file still needs an `st3d`/`sv3d`
-box pair (video) or GPano XMP (stills) before a player will recognise the
-projection without being told.  Until that exists, set the player to
-equirectangular 180, side-by-side, by hand.
 """
 
 import math
+from dataclasses import dataclass
 
 import torch
 
 from . import stereo
 
-# Fixed by the format: 180 degrees each way, which makes each eye square.
+# The container is fixed by the format: 180 degrees each way.
 FOV = 180.0
 # Near-to-far angular separation `auto` aims for, in degrees.  The flat
 # renderer aims at a percentage of frame width, and that number does not survive
@@ -64,77 +62,143 @@ TARGET_DEG = 0.6
 # in the units that mean something here.  Beyond about a degree the two images
 # stop fusing and start doubling.
 LIMIT_DEG = 1.2
-# How wide the fade at the edge of the real picture is.
+# How wide the fade at the edge of the real picture is.  In degrees rather than
+# pixels, because it is a fact about the sphere and not about the file.
 FALLOFF_DEG = 4.0
-# Ceilings on the per-eye square.  A still can afford a big one; a clip has to
-# come back out of a hardware decoder, and 2048 per eye is already 4096 across.
+# Ceilings on the stored width per eye.  A still can afford a big one; a clip has
+# to come back out of a hardware decoder, and 2048 per eye is 4096 across.
 MAX_SIZE = 4096
 VIDEO_MAX_SIZE = 2048
-# Output pixels per band, so peak memory stops tracking the whole equirectangular
-# frame -- the same trick `stereo._render_eye` plays, for the same reason.
+# Output pixels per band, so peak memory stops tracking the whole projection --
+# the same trick `stereo._render_eye` plays, for the same reason.
 _BAND_PIXELS = 8_000_000
 
 
 def even(n):
-    """Encoders refuse odd dimensions, and a square that is even stays even
-    when it is doubled into a pair."""
+    """Encoders refuse odd dimensions, and a width that is even stays even when
+    it is doubled into a pair."""
     return max(2, int(n) - int(n) % 2)
 
 
-def hfov(focal_px, width):
-    """The horizontal field of view of a lens, in degrees."""
-    return math.degrees(2.0 * math.atan(width / (2.0 * float(focal_px))))
+def fov(focal_px, extent):
+    """The angle a lens covers across `extent` pixels, in degrees.  Works for
+    either axis, the two differing only in how many pixels there are."""
+    return math.degrees(2.0 * math.atan(extent / (2.0 * float(focal_px))))
 
 
-def per_radian(size):
-    """Pixels per radian of the finished projection, which is what stands in for
-    the focal length once the picture is on a sphere."""
-    return size / math.radians(FOV)
+@dataclass
+class Patch:
+    """The piece of sphere a picture covers, and the pixels it is stored in.
+
+    `span_az` and `span_el` are its full angular extent in degrees, centred on
+    the view axis.  The whole point of the class is that the two are allowed to
+    be smaller than 180: everything that reads it -- the sampling grid, the
+    disparity, the metadata -- works off the spans rather than assuming the
+    picture fills the sphere.  A `full` frame is the special case where they do.
+    """
+
+    span_az: float
+    span_el: float
+    width: int
+    height: int
+
+    @property
+    def full_width(self):
+        """Width of the 360-degree equirectangular frame this is a piece of."""
+        return int(round(self.width * 360.0 / self.span_az))
+
+    @property
+    def full_height(self):
+        return int(round(self.height * FOV / self.span_el))
+
+    @property
+    def left(self):
+        return int(round((self.full_width - self.width) / 2.0))
+
+    @property
+    def top(self):
+        return int(round((self.full_height - self.height) / 2.0))
+
+    @property
+    def per_radian(self):
+        """Pixels per radian, which is what stands in for the focal length once
+        the picture is on a sphere."""
+        return self.width / math.radians(self.span_az)
+
+    @property
+    def cropped(self):
+        return self.span_az < FOV or self.span_el < FOV
 
 
 def per_eye(width, focal_px, cap=MAX_SIZE):
-    """The square to render each eye at.
+    """The square to store a `full` frame at.
 
-    The size that would keep the photograph's own detail is the one that gives
-    the sphere the same pixels per degree the photograph had -- which for a
-    65-degree lens means a square nearly three times the width of the original,
-    and for anything off a modern camera lands past 10000 a side.  So it is
-    asked for and then capped, and the caller is left to report the shortfall
-    rather than have it happen quietly.
+    Keeping the photograph's own detail means giving the sphere the pixels per
+    degree the photograph had, which for a 65-degree lens is a square nearly
+    three times the source width and for a 49-degree one four times.  It is asked
+    for and then capped, and the shortfall is the reason cropping is the default.
     """
-    natural = width * FOV / hfov(focal_px, width)
+    natural = width * FOV / fov(focal_px, width)
     return even(max(64, min(cap, round(natural))))
 
 
-def auto_target():
+def patch(focal_px, src_w, src_h, cap=MAX_SIZE, size=None, full=False):
+    """Where this photograph sits on the sphere, and how big to store it.
+
+    Stored at the source's own width it carries the source's own detail, which is
+    the whole reason for cropping: a 180-degree container spends its pixels on
+    the dark and leaves the picture whatever share its lens happened to earn.
+    """
+    if full:
+        side = even(min(cap, size or per_eye(src_w, focal_px, cap)))
+        return Patch(FOV, FOV, side, side)
+    span_az, span_el = fov(focal_px, src_w), fov(focal_px, src_h)
+    width = even(max(64, min(cap, size or src_w)))
+    # Height follows the angles rather than the source's own aspect: equirect is
+    # linear in angle and a rectilinear frame is not, so the two are not the same
+    # ratio.  Following the angles is what keeps the full frame 2:1, which is
+    # what makes the recorded crop offsets mean anything.
+    return Patch(span_az, span_el, width, even(max(64, round(width * span_el / span_az))))
+
+
+def auto_target(spot):
     """`TARGET_DEG` restated as the percentage of frame width that
-    `stereo.auto_geometry` takes, so that one piece of scene-fitting logic
-    serves both projections instead of two that can drift apart."""
-    return 100.0 * TARGET_DEG / FOV
+    `stereo.auto_geometry` takes, so that one piece of scene-fitting logic serves
+    both projections instead of two that can drift apart.
+
+    It has to be asked of the patch and not of the format.  The shared routine
+    aims at a share of the frame width, and once the frame is a crop rather than
+    the whole 180 degrees, the same share is a different angle: pinned at 180 a
+    65-degree patch came out with under half the separation it had asked for, and
+    looked merely flat rather than wrong.
+    """
+    return 100.0 * TARGET_DEG / spot.span_az
 
 
-def _elevation(top, rows, size, device, dtype):
-    """Elevation of each output row, in radians: +90 at the top, -90 at the
-    bottom, which is the way round equirectangular has it."""
+def _elevation(top, rows, spot, device, dtype):
+    """Elevation of each stored row, in radians, counting down from the top of
+    the patch -- which is the way round equirectangular has it."""
     row = torch.arange(top, top + rows, device=device, dtype=dtype)
-    return math.radians(FOV) / 2.0 - (row + 0.5) / size * math.radians(FOV)
+    span = math.radians(spot.span_el)
+    return span / 2.0 - (row + 0.5) / spot.height * span
 
 
-def _grid(top, rows, size, focal_px, src_h, src_w, device, dtype):
-    """Where each equirectangular pixel in a band of rows reads from in the
-    source photograph, and whether it reads from anywhere at all.
+def _grid(top, rows, spot, focal_px, src_h, src_w, device, dtype):
+    """Where each stored pixel in a band of rows reads from in the source
+    photograph, and whether it reads from anywhere at all.
 
     Azimuth and elevation give a direction; the direction is put back through
     the pinhole the depth model reported.  Anything behind the camera, or past
     the edge of the frame, is not in the photograph and is marked as such.
     """
-    col = torch.arange(size, device=device, dtype=dtype)
-    az = (col + 0.5) / size * math.radians(FOV) - math.radians(FOV) / 2.0
-    el = _elevation(top, rows, size, device, dtype)[:, None]
+    col = torch.arange(spot.width, device=device, dtype=dtype)
+    span_az = math.radians(spot.span_az)
+    az = (col + 0.5) / spot.width * span_az - span_az / 2.0
+    el = _elevation(top, rows, spot, device, dtype)[:, None]
 
     cos_el, sin_el = torch.cos(el), torch.sin(el)
     x = torch.sin(az)[None, :] * cos_el
-    y = sin_el.expand(rows, size)
+    y = sin_el.expand(rows, spot.width)
     z = torch.cos(az)[None, :] * cos_el
 
     # Behind the camera divides by a negative and folds the picture back on
@@ -152,23 +216,23 @@ def _grid(top, rows, size, focal_px, src_h, src_w, device, dtype):
     return torch.stack((gx, gy), dim=-1)[None], valid
 
 
-def project(source, focal_px, size):
-    """Warp a `[C, H, W]` perspective image onto a `[C, size, size]` equirectangular
-    half-sphere, and say which of its pixels came from anywhere.
+def project(source, focal_px, spot):
+    """Warp a `[C, H, W]` perspective image onto the patch, and say which of its
+    pixels came from anywhere.
 
-    Banded over output rows: an 8192-square projection of a large photograph is
-    several gigabytes if it is built in one piece, and nothing here needs it to
-    be.
+    Banded over output rows: a large projection built in one piece is several
+    gigabytes, and nothing here needs it to be.
     """
     import torch.nn.functional as F
 
     src_h, src_w = source.shape[-2:]
-    out = torch.zeros(source.shape[0], size, size, device=source.device, dtype=source.dtype)
-    mask = torch.zeros(size, size, device=source.device, dtype=torch.bool)
-    band = max(1, _BAND_PIXELS // max(size, 1))
-    for top in range(0, size, band):
-        rows = min(band, size - top)
-        grid, valid = _grid(top, rows, size, focal_px, src_h, src_w,
+    out = torch.zeros(source.shape[0], spot.height, spot.width,
+                      device=source.device, dtype=source.dtype)
+    mask = torch.zeros(spot.height, spot.width, device=source.device, dtype=torch.bool)
+    band = max(1, _BAND_PIXELS // max(spot.width, 1))
+    for top in range(0, spot.height, band):
+        rows = min(band, spot.height - top)
+        grid, valid = _grid(top, rows, spot, focal_px, src_h, src_w,
                             source.device, source.dtype)
         out[:, top:top + rows] = F.grid_sample(
             source[None], grid, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
@@ -176,74 +240,76 @@ def project(source, focal_px, size):
     return out, mask
 
 
-def coverage(mask):
+def coverage(mask, spot):
     """The share of the hemisphere that is photograph, by solid angle.
 
     Deliberately not the share of the pixels.  Equirectangular packs far more
-    pixels into a degree near the pole than at the equator, so counting them
-    would flatter or libel the result depending on nothing but where in the
-    frame the picture happened to land.  What a viewer notices is how much of
-    what they can turn to look at is real, and that is solid angle: the same
-    quantity that says a 28mm lens brings 15% of a hemisphere with it.
+    pixels into a degree near the pole than at the equator, and once the frame is
+    cropped the stored pixels are not a hemisphere's worth in the first place --
+    so counting them would say almost nothing.  What a viewer notices is how much
+    of what they can turn to look at is real, and that is solid angle.
     """
-    weight = torch.cos(_elevation(0, mask.shape[0], mask.shape[0],
-                                  mask.device, torch.float32))[:, None]
-    return float((mask.float() * weight).sum() / weight.expand_as(mask).sum())
+    weight = torch.cos(_elevation(0, spot.height, spot, mask.device, torch.float32))[:, None]
+    per_pixel = math.radians(spot.span_az) / spot.width * math.radians(spot.span_el) / spot.height
+    return float((mask.float() * weight).sum()) * per_pixel / (2.0 * math.pi)
 
 
-def _falloff(mask, size):
+def _falloff(mask, spot):
     """A soft edge at the boundary of the real picture, in place of a cut one.
 
     The blur of a hard mask runs from one deep inside to zero outside, which is
     the ramp wanted; multiplying by the mask again keeps the fade strictly
     inside, so no pixel that came from nowhere is ever shown at any strength.
+    The blur replicates at the frame edge rather than padding it with nothing, so
+    a patch cropped tight to its own picture is not darkened around all four
+    sides for the crime of having no room to spare.
     """
-    radius = max(1, round(FALLOFF_DEG * size / FOV))
+    radius = max(1, round(FALLOFF_DEG * spot.width / spot.span_az))
     soft = stereo._box(mask.float()[None, None], radius)[0, 0].clamp_(0, 1)
     return mask.float() * (soft * soft * (3.0 - 2.0 * soft))  # smoothstep
 
 
-def half_disparity(inverse, size, eyes_mm, focus_m, limit_deg=LIMIT_DEG, elevation=None):
+def half_disparity(inverse, spot, eyes_mm, focus_m, limit_deg=LIMIT_DEG, elevation=None):
     """Half the omnidirectional-stereo separation, in pixels, for every pixel.
 
     The formula is `stereo.half_disparity`'s, because it is the same geometry:
     what changes is that a radian of angle rather than a pixel of sensor is what
     the separation is measured against, so pixels-per-radian goes in where the
     focal length was.  The clamp is in degrees for the same reason -- a
-    percentage of the frame width means a percentage of 180 degrees here, which
-    is not a quantity anybody's comfort is described in.
+    percentage of the frame width means a percentage of however much sphere this
+    patch happens to cover, which is not a quantity comfort is described in.
     """
-    ppr = per_radian(size)
+    ppr = spot.per_radian
     half = stereo.half_disparity(inverse, ppr, eyes_mm, focus_m)
     cap = math.radians(limit_deg) * ppr / 2.0
     half = half.clamp(-cap, cap)
     if elevation is None:
-        elevation = _elevation(0, size, size, inverse.device, torch.float32)
+        elevation = _elevation(0, spot.height, spot, inverse.device, torch.float32)
     # Towards the poles the two eyes line up along the view direction and the
     # separation has to go to nothing.  Without this the top and bottom of the
     # sphere ask for parallax that no arrangement of two eyes could produce.
     return half * torch.cos(elevation.to(half.dtype))[:, None]
 
 
-def render(rgb, inverse, focal_px, eyes_mm, focus_m, size, limit_deg=LIMIT_DEG):
+def render(rgb, inverse, focal_px, eyes_mm, focus_m, spot, limit_deg=LIMIT_DEG):
     """One flat frame and its depth in; a VR180 eye pair and its coverage out.
 
     `rgb` is `[3, H, W]` in [0, 1] and `inverse` the matching `[H, W]` inverse
     depth in 1/metres -- both as the flat path has them, because both are warped
     from there rather than estimated here.
     """
-    equirect, mask = project(rgb, focal_px, size)
-    depth, _ = project(inverse[None], focal_px, size)
+    equirect, mask = project(rgb, focal_px, spot)
+    depth, _ = project(inverse[None], focal_px, spot)
     # Nothing was ever pointed at the void, so it has no depth either.  Parked at
     # the screen plane it asks for no separation, which keeps it still and stops
     # the splat dragging it sideways over the edge of the real picture.
     depth = torch.where(mask, depth[0], torch.full_like(depth[0], 1.0 / max(focus_m, 1e-6)))
 
-    half = half_disparity(depth, size, eyes_mm, focus_m, limit_deg)
+    half = half_disparity(depth, spot, eyes_mm, focus_m, limit_deg)
     # No margin: the flat path trims the sliver at each edge that only one eye
     # reaches, and here that sliver is angle.  Trimming it would quietly narrow
     # the field of view and put every remaining pixel at the wrong bearing.
     left, right = stereo.make_pair(equirect, half, margin=0)
 
-    fade = _falloff(mask, size)
+    fade = _falloff(mask, spot)
     return left * fade, right * fade, mask

@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageOps
 
-from . import budget, stereo, vr180
+from . import budget, spherical, stereo, vr180
 from .depth import DepthEstimator, exif_focal
 
 pillow_heif.register_heif_opener()
@@ -64,10 +64,15 @@ class Settings:
     # its true angular scale instead, which is more immersive where the photo
     # reaches and simply dark where it does not -- see `vr180`.
     projection: str = "flat"
-    # Per-eye square for the vr180 projection, or auto to ask for the photo's own
-    # detail and settle for `vr180_cap`.
+    # Stored width per eye for the vr180 projection, or auto to keep the photo's
+    # own, capped at `vr180_cap`.  Only the piece of sphere the photo covers is
+    # stored, so this buys picture rather than dark -- see `vr180`.
     vr180_size: object = "auto"
     vr180_cap: int = vr180.MAX_SIZE
+    # Write the whole 180-degree square, dark and all, instead of the piece that
+    # exists.  Costs almost all of the resolution and is here for a player that
+    # reads neither GPano nor the projection bounds.
+    vr180_full: bool = False
     # Called when a photo will not fit, with the `TooBig` describing it, and
     # expected to return "resize" or "skip".  Left unset nothing is ever
     # silently downscaled: the photo is skipped and the caller told why.
@@ -212,12 +217,15 @@ def output_path(src, dst, fmt, name="_sbs"):
     return dst
 
 
-def save_image(array, path, quality=95):
+def save_image(array, path, quality=95, xmp=None):
+    """`xmp` is written only into a JPEG, which is the format that reliably
+    carries it and the one a VR photo viewer expects to be handed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     img = Image.fromarray(array)
     suffix = path.suffix.lower()
     if suffix in (".jpg", ".jpeg"):
-        img.save(path, quality=quality, subsampling=0, optimize=True)
+        extra = {"xmp": xmp} if xmp else {}
+        img.save(path, quality=quality, subsampling=0, optimize=True, **extra)
     elif suffix == ".png":
         img.save(path, compress_level=6)
     else:
@@ -289,6 +297,8 @@ class Converter:
         # Fraction of the last vr180 frame that came from the photograph rather
         # than from nowhere.  None after a flat render, which is all coverage.
         self.covered = None
+        # The piece of sphere it was put on, which the metadata is written from.
+        self.spot = None
         # Where the lens came from: "model", "exif" or "assumed".  Worth keeping
         # because it means far more to a sphere than to a plane -- see `render`.
         self.lens = None
@@ -388,7 +398,7 @@ class Converter:
             focus = float(cfg.focus_m)
         return eyes, focus
 
-    def render(self, image, normalizer=None, margin=None, focal=None, size=None):
+    def render(self, image, normalizer=None, margin=None, focal=None, spot=None):
         """One frame in; the two eye views and the depth map behind them out.
 
         Composing is left to the caller because a video squeezes each eye to half
@@ -400,9 +410,10 @@ class Converter:
         trim so a clip cannot change size part-way through.  A still passes
         neither and gets exactly what it always did.
 
-        `size` pins the vr180 per-eye square, for the same reason `margin`
-        exists: left to size itself from the lens it could come out different
-        from one frame to the next, and no encoder will take that.
+        `spot` pins the piece of sphere a vr180 frame is put on, for the same
+        reason `margin` exists: left to work itself out from the lens it could
+        come out a different size from one frame to the next, and no encoder
+        will take that.
         """
         cfg = self.settings
         estimator = self.depth_model
@@ -427,7 +438,7 @@ class Converter:
         # The lens, restated in pixels at the width actually being rendered.
         focal_full = depth.focal * width / depth.working[1]
         if cfg.projection == "vr180":
-            return self._render_vr180(rgb, inverse, focal_full, size)
+            return self._render_vr180(rgb, inverse, focal_full, spot)
 
         eyes, focus = self.geometry(inverse, width, focal_full)
         half = stereo.half_disparity(inverse, focal_full, eyes, focus, cfg.limit_pct, width)
@@ -436,7 +447,7 @@ class Converter:
         self.covered = None  # a flat frame is photograph edge to edge
         return left, right, inverse
 
-    def _render_vr180(self, rgb, inverse, focal_full, size=None):
+    def _render_vr180(self, rgb, inverse, focal_full, spot=None):
         """The same frame, on a hemisphere instead of a plane.
 
         The depth map is not re-estimated here.  It was measured on the
@@ -454,17 +465,18 @@ class Converter:
         when it does not, because a guessed angular scale is worth admitting to.
         """
         cfg = self.settings
-        if size is None:
-            size = (vr180.per_eye(rgb.shape[2], focal_full, cfg.vr180_cap)
-                    if cfg.vr180_size in (None, 0, "auto") else vr180.even(cfg.vr180_size))
+        if spot is None:
+            spot = vr180.patch(focal_full, rgb.shape[2], rgb.shape[1], cfg.vr180_cap,
+                               None if cfg.vr180_size in (None, 0, "auto") else int(cfg.vr180_size),
+                               cfg.vr180_full)
         # Asked against the projection rather than the photo: a baseline is a
-        # distance in millimetres either way, but what counts as enough of one
-        # is set by how far the picture is stretched, and here that is 180
-        # degrees rather than the lens's sixty-odd.
-        eyes, focus = self.geometry(inverse, size, vr180.per_radian(size), vr180.auto_target())
-        left, right, mask = vr180.render(rgb, inverse, focal_full, eyes, focus, size)
+        # distance in millimetres either way, but what counts as enough of one is
+        # set by how far the picture is stretched to get onto the sphere.
+        eyes, focus = self.geometry(inverse, spot.width, spot.per_radian, vr180.auto_target(spot))
+        left, right, mask = vr180.render(rgb, inverse, focal_full, eyes, focus, spot)
         self.chose = (eyes, focus)
-        self.covered = vr180.coverage(mask)
+        self.covered = vr180.coverage(mask, spot)
+        self.spot = spot
         return left, right, inverse
 
     def _run(self, src, dst, size=None):
@@ -496,7 +508,12 @@ class Converter:
             size = (max(1, round(sbs.shape[1] * scale)), cfg.max_size)
             sbs = F.interpolate(sbs[None], size=size, mode="bilinear", align_corners=False, antialias=True)[0]
 
-        out = save_image(_to_uint8(sbs), output_path(src, dst, cfg.fmt, tag(cfg)), cfg.quality)
+        # Where on the sphere the picture sits, so a player does not stretch a
+        # cropped patch across the whole 180 degrees and show it at life size
+        # times four.  Cropping and saying so are one change, not two.
+        marks = spherical.gpano(self.spot) if cfg.projection == "vr180" and self.spot else None
+        out = save_image(_to_uint8(sbs), output_path(src, dst, cfg.fmt, tag(cfg)),
+                         cfg.quality, marks)
         if cfg.save_depth:
             save_depth_map(inverse, out.with_name(f"{Path(src).stem}_depth.png"))
 
@@ -510,6 +527,7 @@ class Converter:
             "focus_m": self.chose[1],
             "coverage": self.covered,
             "lens": self.lens,
+            "patch": self.spot,
             "seconds": time.perf_counter() - started,
         }
 

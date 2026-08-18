@@ -71,42 +71,50 @@ class TestGeometry:
 
 
 class TestVr180Geometry:
-    """A clip on a sphere: square per eye, no trim, and sized without the lens."""
+    """A clip on a sphere: a patch of it, no trim, and settled before frame one."""
 
-    def test_each_eye_is_square_and_the_pair_is_two_to_one(self):
-        g = video.geometry(video.Clip(1920, 1080, 30.0, 100, 3.3),
-                           VideoSettings(projection="vr180"))
-        assert g.eye == g.height
-        assert g.width == 2 * g.height
+    def clip(self, w=1920, h=1080):
+        return video.Clip(w, h, 30.0, 100, 3.3)
+
+    def test_it_carries_the_patch_the_frames_go_on(self):
+        g = video.geometry(self.clip(), VideoSettings(projection="vr180"))
+        assert g.patch is not None
+        assert (g.eye, g.height) == (g.patch.width, g.patch.height)
+
+    def test_a_flat_clip_has_no_patch(self):
+        assert video.geometry(self.clip(), VideoSettings()).patch is None
 
     def test_nothing_is_trimmed(self):
         """The sliver only one eye reaches is angle here, and cutting it would
         put every remaining pixel at the wrong bearing."""
-        g = video.geometry(video.Clip(1920, 1080, 30.0, 100, 3.3),
-                           VideoSettings(projection="vr180"))
-        assert g.margin == 0
+        assert video.geometry(self.clip(), VideoSettings(projection="vr180")).margin == 0
+
+    def test_the_patch_is_the_assumed_lens(self):
+        """No clip carries intrinsics and the metric model reports none, so the
+        only lens available before the first frame is the assumed one."""
+        g = video.geometry(self.clip(), VideoSettings(projection="vr180"))
+        assert g.patch.span_az == pytest.approx(65.47, abs=0.1)
+
+    def test_cropping_keeps_the_clip_s_own_width(self):
+        g = video.geometry(self.clip(1280, 720), VideoSettings(projection="vr180"))
+        assert g.patch.width == 1280
 
     def test_an_explicit_size_is_taken(self):
-        g = video.geometry(video.Clip(1920, 1080, 30.0, 100, 3.3),
-                           VideoSettings(projection="vr180", vr180_size=1024))
+        g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_size=1024))
         assert g.eye == 1024
-
-    def test_a_small_clip_is_not_blown_up_to_the_cap(self):
-        """The cap is a ceiling, not a target.  Going straight to it would
-        upscale a 320-wide clip more than six times over for nothing."""
-        g = video.geometry(video.Clip(320, 240, 30.0, 30, 1.0),
-                           VideoSettings(projection="vr180"))
-        assert g.eye < VideoSettings.vr180_cap
-        assert g.eye == pytest.approx(320 * 180 / 65.47, abs=2)
 
     def test_a_large_one_stops_at_the_cap(self):
         g = video.geometry(video.Clip(3840, 2160, 30.0, 30, 1.0),
                            VideoSettings(projection="vr180"))
         assert g.eye == VideoSettings.vr180_cap
 
-    @pytest.mark.parametrize("w", [321, 641, 1001])
-    def test_the_square_comes_out_even(self, w):
-        g = video.geometry(video.Clip(w, w, 30.0, 10, 1.0), VideoSettings(projection="vr180"))
+    def test_full_writes_the_square_instead(self):
+        g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_full=True))
+        assert g.eye == g.height and not g.patch.cropped
+
+    @pytest.mark.parametrize("w,h", [(321, 241), (641, 361), (1001, 667)])
+    def test_both_dimensions_come_out_even(self, w, h):
+        g = video.geometry(video.Clip(w, h, 30.0, 10, 1.0), VideoSettings(projection="vr180"))
         assert g.width % 2 == 0 and g.height % 2 == 0
 
 

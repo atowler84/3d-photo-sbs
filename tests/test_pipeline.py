@@ -1,5 +1,7 @@
 """End to end, with the depth model loaded.  Slow, and the part that matters."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -74,42 +76,75 @@ class TestVr180:
         finally:
             converter.settings = was
 
-    def test_each_eye_is_square_and_the_pair_is_two_to_one(self, converter, photo, tmp_path):
+    def test_the_pair_is_the_patch_side_by_side(self, converter, photo, tmp_path):
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
-        assert info["output_size"] == (384, 192)
+        spot = info["patch"]
+        assert info["output_size"] == (2 * spot.width, spot.height)
+        assert spot.width == 192
+
+    def test_the_stored_frame_is_mostly_picture(self, converter, photo, tmp_path):
+        """The complaint that started this: the 180-degree square spent 97% of
+        itself on dark that no lens had ever pointed at."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
+        out = np.asarray(Image.open(info["output"])).astype(int)
+        lit = (out.max(axis=2) > 8).mean()
+        assert lit > 0.8, "a cropped patch should be picture nearly all the way out"
+
+    def test_the_square_is_mostly_dark_which_is_why_it_is_not_the_default(
+            self, converter, photo, tmp_path):
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192,
+                            vr180_full=True)
+        out = np.asarray(Image.open(info["output"])).astype(int)
+        assert (out.max(axis=2) > 8).mean() < 0.35
+
+    def test_cropping_does_not_change_how_much_sphere_is_real(self, converter, photo, tmp_path):
+        """Fewer pixels, same picture, same place.  If this moves, the crop has
+        quietly changed the field of view rather than just the file size."""
+        tight = self.convert(converter, photo, tmp_path / "a.jpg", vr180_size=192)
+        square = self.convert(converter, photo, tmp_path / "b.jpg", vr180_size=192,
+                              vr180_full=True)
+        assert tight["coverage"] == pytest.approx(square["coverage"], rel=0.05)
 
     def test_the_eyes_differ_but_the_void_does_not(self, converter, photo, tmp_path):
         """Where there is picture the two eyes must disagree; where there is
         nothing they must agree exactly, both being black."""
-        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192,
+                            vr180_full=True)
         out = np.asarray(Image.open(info["output"])).astype(int)
         left, right = out[:, :192], out[:, 192:]
         assert not np.array_equal(left, right)
         corner = (slice(0, 20), slice(0, 20))  # a pole, which no lens ever reaches
         assert left[corner].max() < 8 and right[corner].max() < 8
 
+    def test_it_says_where_on_the_sphere_it_belongs(self, converter, photo, tmp_path):
+        """A cropped patch with no GPano is not shown small, it is stretched
+        across the whole 180 degrees -- so the metadata is part of the change."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
+        written = Path(info["output"]).read_bytes()
+        spot = info["patch"]
+        assert b"ns.google.com/photos" in written
+        assert f'CroppedAreaLeftPixels="{spot.left}"'.encode() in written
+        assert f'FullPanoWidthPixels="{spot.full_width}"'.encode() in written
+
+    def test_a_flat_photo_says_nothing_of_the_kind(self, converter, photo, tmp_path):
+        info = converter.convert(photo, tmp_path / "flat.jpg")
+        assert b"ns.google.com/photos" not in Path(info["output"]).read_bytes()
+        assert info["coverage"] is None
+
     def test_reports_how_much_of_the_sphere_is_real(self, converter, photo, tmp_path):
-        """The number that decides whether the result is worth having, so it is
-        worth failing over rather than trusting."""
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
         assert 0.0 < info["coverage"] < 0.5, "a rectilinear photo cannot fill a hemisphere"
-
-    def test_the_flat_path_reports_no_coverage_at_all(self, converter, photo, tmp_path):
-        assert converter.convert(photo, tmp_path / "flat.jpg")["coverage"] is None
 
     def test_says_when_the_lens_was_only_assumed(self, converter, photo, tmp_path):
         """A wrong focal length rescales a flat scene harmlessly and puts a
         spherical one at the wrong apparent size, so a guess has to be owned up
         to rather than quietly used."""
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=128)
-        assert info["lens"] in ("model", "exif", "assumed")
-        # The fixture photo is generated, so it carries no EXIF to read.
-        assert info["lens"] == "assumed"
+        assert info["lens"] == "assumed", "the fixture photo carries no EXIF"
 
-    def test_auto_sizing_asks_for_the_photo_s_own_detail(self, converter, photo, tmp_path):
-        """320 pixels across a phone's 65 degrees wants about 880 across 180."""
+    def test_auto_sizing_keeps_the_photo_s_own_width(self, converter, photo, tmp_path):
         info = self.convert(converter, photo, tmp_path / "vr.jpg")
-        assert 700 <= info["output_size"][1] <= 1100
+        assert info["patch"].width == 320
 
 
 class TestVideo:

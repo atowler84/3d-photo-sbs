@@ -32,7 +32,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from . import budget, stereo, vr180
+from . import budget, spherical, stereo, vr180
 from .depth import DEFAULT_FOCAL_35MM, _app_dir, focal_from_35mm
 from .pipeline import OUT_OF_MEMORY, Converter, VideoSettings, tag
 
@@ -270,6 +270,7 @@ class Geometry:
     margin: int  # trimmed off each end of each eye, pinned so no frame differs
     eye: int  # width of one eye view in the finished frame
     height: int
+    patch: object = None  # the piece of sphere it sits on, for a vr180 clip
 
     @property
     def width(self):
@@ -284,23 +285,21 @@ def geometry(clip, settings):
     decoders can keep up with; `full_width` keeps every native pixel instead and
     doubles the frame, which is past what most of them will decode above 1080p.
 
-    A vr180 clip has no say in the matter: the projection is 180 degrees square
-    per eye whatever went in, and the only free choice is how many pixels to
-    spend on it.  A still asks the depth model what lens it was taken with and
-    sizes itself to keep that lens's detail; a clip cannot, because every frame
-    has to come out the size of the first and the first has not been through the
-    model yet.  So it assumes the lens most cameras have, which is the same
-    assumption `depth` falls back on when a photo has lost its EXIF, and caps the
-    result -- rather than going straight to the cap and upscaling a small clip to
-    it for no reason.
+    A vr180 clip is a piece of a sphere rather than a rectangle, and which piece
+    has to be settled before the first frame is decoded: every frame must come
+    out the size of the first, and the first has not been through the depth model
+    yet to say what lens it was shot on.  So it assumes the lens most cameras
+    have -- the same assumption `depth` falls back on for a photo that has lost
+    its EXIF, and the only one available here, since no clip carries intrinsics
+    and the metric model reports none.
     """
     if settings.projection == "vr180":
-        if settings.vr180_size in (None, 0, "auto"):
-            assumed = focal_from_35mm(DEFAULT_FOCAL_35MM, clip.width)
-            size = vr180.per_eye(clip.width, assumed, settings.vr180_cap)
-        else:
-            size = vr180.even(settings.vr180_size)
-        return Geometry(margin=0, eye=size, height=size)
+        assumed = focal_from_35mm(DEFAULT_FOCAL_35MM, clip.width)
+        spot = vr180.patch(assumed, clip.width, clip.height, settings.vr180_cap,
+                           None if settings.vr180_size in (None, 0, "auto")
+                           else int(settings.vr180_size),
+                           settings.vr180_full)
+        return Geometry(margin=0, eye=spot.width, height=spot.height, patch=spot)
     margin = stereo.max_margin(clip.width, settings.limit_pct)
     eye = clip.width - 2 * margin if settings.full_width else clip.width // 2
     return Geometry(margin=margin, eye=_even(eye), height=_even(clip.height))
@@ -483,7 +482,7 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
 
     # Pinned for every frame when the projection is a sphere, and meaningless
     # when it is not.
-    square = geo.eye if cfg.projection == "vr180" else None
+    square = geo.patch
     done, cancelled = 0, False
     # What the caller asked for, to be put back afterwards: a clip that had
     # to finish on the CPU should not decide that for the clips behind it,
@@ -497,13 +496,13 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
                 while _read_exactly(decoder.stdout, view) == frame_bytes:
                     try:
                         left, right, _ = converter.render(frame, normalizer, geo.margin,
-                                                          size=square)
+                                                          spot=square)
                     except OUT_OF_MEMORY:
                         if not _fall_back_to_cpu(converter):
                             raise
                         normalizer.reset()  # its memory is on a device we have just left
                         left, right, _ = converter.render(frame, normalizer, geo.margin,
-                                                          size=square)
+                                                          spot=square)
 
                     left = _squeeze(left, geo.eye, geo.height)
                     right = _squeeze(right, geo.eye, geo.height)
@@ -544,6 +543,19 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
             if encoder.returncode:
                 raise RuntimeError(f"ffmpeg could not write {out.name}: {_log(encode_log)}")
 
+        # Said last, into the finished file, because ffmpeg will not say it and a
+        # cropped patch that does not say where it belongs gets stretched across
+        # the whole sphere.  A failure here is worth a word rather than an
+        # exception: the clip plays, it is only unlabelled.
+        marked = False
+        if geo.patch is not None:
+            marked = spherical.annotate(
+                out, geo.patch,
+                spherical.RIGHT_LEFT if cfg.cross_eyed else spherical.LEFT_RIGHT)
+            if not marked:
+                print(f"{out.name}: could not write the projection boxes; the clip is "
+                      f"fine but a player will have to be told what it is", file=sys.stderr)
+
         seconds = time.perf_counter() - started
         return {
             "input": src,
@@ -555,6 +567,8 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
             "cuts": normalizer.cuts,
             "coverage": converter.covered,
             "lens": converter.lens,
+            "patch": geo.patch,
+            "marked": marked if geo.patch is not None else None,
             "fps": clip.fps,
             "seconds": seconds,
         }

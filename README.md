@@ -464,7 +464,8 @@ knowing before trusting a `--save-depth` map as a measurement.
 | `--format`, `-q` | `auto`, `95` | Output container and JPEG quality. |
 | `--save-depth` | off | Also write a 16-bit `_depth.png`, near white and far black, scaled across its own range so it can be looked at. The two distances it scaled by go in the PNG's metadata as `stereocraft:near_m` and `stereocraft:far_m`, so `metres = far - (value / 65535) * (far - near)` gets them back. Read [where the metres come from](#where-the-metres-come-from) before trusting them. |
 | `--projection` | `flat` | `flat` writes a rectilinear pair, shown on a virtual screen. `vr180` wraps the same geometry onto a hemisphere at its true angular scale — see [VR180](#vr180). |
-| `--vr180-size` | `auto` | Per-eye square for `--projection vr180`. `auto` asks for as much of the photo's own detail as fits under 4096 (2048 for a clip). |
+| `--vr180-size` | `auto` | Stored width per eye for `--projection vr180`. Only the piece of sphere the picture covers is stored, so this buys picture rather than dark. `auto` keeps the source's own width, capped at 4096 (2048 for a clip). |
+| `--vr180-full` | off | Write the whole 180-degree square, dark and all, instead of the piece that exists. Costs most of the resolution; for a player that reads neither GPano nor the projection bounds. |
 | `--device` | `auto` | `cuda`, `mps` or `cpu`. |
 | `--oversize` | `ask` | A photo too big for memory: `ask` what to do, `skip` it, or `resize` it to the largest size that fits. |
 
@@ -560,16 +561,30 @@ It is also mostly black, and that is not a bug to be fixed later.
 
 ```
 stereocraft --projection vr180 photo.jpg
-photo_180_sbs.jpg  3536x1768  4mm@0.3m  25% real (28mm assumed)
+photo_180_sbs.jpg  1284x896  4mm@0.3m  25% of a sphere (28mm assumed)
 ```
 
-The `25% real` is the share of the hemisphere the photograph actually reaches,
-by solid angle. A 28mm phone lens covers 65 by 51 degrees, which is 15% of what
-you can turn your head and look at; a 16mm ultrawide manages 30%. The rest is
-dark because nothing was ever pointed at it. The edge is faded rather than cut,
-on the grounds that an honest absence reads better than a hard-edged rectangle
-floating in a void — but no amount of projection will invent a periphery the
-camera did not record.
+The `25% of a sphere` is how much of the hemisphere the photograph reaches, by
+solid angle. A 28mm phone lens covers 65 by 51 degrees, which is 15% of what you
+can turn your head and look at; a 16mm ultrawide manages 30%; a 49mm lens 5%. No
+amount of projection will invent the rest, so **only the part that exists is
+stored**, and the file says where on the sphere it belongs — GPano for a photo,
+projection bounds for a clip. The edge is faded rather than cut, an honest
+absence reading better than a hard-edged rectangle floating in a void.
+
+Writing the whole 180-degree square instead would spend almost all of it on
+nothing, and spend the resolution with it:
+
+| | Stored | Lit | Picture is |
+| --- | --- | --- | --- |
+| cropped (default) | 1284 × 896 | 96% | 642px per eye |
+| `--vr180-full` | 3536 × 1768 | 18% | 642px per eye |
+
+Same photograph, same place on the sphere, same apparent size in a headset —
+five times the pixels to say it. It is worse than the table looks on a long
+lens: at 4096 a side a 49mm photo comes back 918 pixels wide surrounded by
+fifteen megapixels of black, which is what `--vr180-size` now buys you out of,
+because it sizes the picture rather than the container.
 
 | Lens | Field of view | Real | Invented |
 | --- | --- | --- | --- |
@@ -578,11 +593,12 @@ camera did not record.
 | 16mm ultrawide | 96.7° × 73.7° | 30% | 70% |
 | 13mm ultrawide | 108.3° × 92.2° | 40% | 60% |
 
-**Resolution is the other cost.** Keeping the photograph's own detail means
-giving the sphere the pixels per degree the photograph had, which for a 65-degree
-lens is a square nearly three times the source width — 11000 a side for a 4000px
-photo. That is asked for and then capped at 4096, so a large photo is used softer
-than it arrived. `--vr180-size` sets it by hand.
+**Resolution.** Cropped, the patch is stored at the source's own width by
+default, which is the width that keeps the source's own detail — so nothing is
+thrown away and nothing is invented. `--vr180-size` overrides it, capped at 4096
+for a photo and 2048 for a clip. `--vr180-full` goes back to the square, where
+keeping that same detail would need 11000 pixels a side for an ordinary phone
+photo and four times more again for a short telephoto.
 
 **It is a different question from the flat path, so it is asked differently.**
 `--target` and `--limit` are percentages of frame width, and a percentage of a
@@ -602,17 +618,32 @@ EXIF supplies it where a photo still has one. Where it does not, the output says
 metric DA3 checkpoint reports no intrinsics of its own, so a photo stripped of
 its EXIF by a download or a screenshot is guessed at.
 
-**Two things it does not do yet.** No `st3d`/`sv3d` box is written, so the
-`_180_sbs` in the name is the only thing telling a player what it has — which
-most of them read, and one that does not has to be set by hand. And the
-periphery is empty rather than outpainted, which is the honest state of the art —
-generating it means a 512-tall diffusion model filling 85% of the frame, with
+**What the file says about itself.** A photo carries GPano XMP, whose
+`CroppedArea*` and `FullPano*` fields exist precisely to say "a piece of a
+panorama, and here is where". A clip carries the Spherical Video V2 boxes:
+`st3d` for the side-by-side pair and `sv3d/proj/equi` for the projection and its
+bounds — which is not a VR180 special case at all, a VR180 file being a
+360-degree equirectangular one whose bounds crop it to the middle 180. ffmpeg
+writes neither, so the boxes are spliced in afterwards and every chunk offset in
+the file moved to match.
+
+A player that reads none of it will stretch a cropped patch across the whole
+sphere rather than showing it small, so `--vr180-full` is there as the way out.
+`--cross` writes stereo mode 4, right-left, which ffmpeg itself discards — a
+clip that goes unlabelled asks a question, where one labelled left-right would
+confidently tell a headset to swap the viewer's eyes.
+
+**The one thing it still does not do** is invent the periphery, which is the
+honest state of the art: a 512-tall diffusion model filling 85% of the frame,
 hallucinated depth behind hallucinated colour, on an app whose whole argument is
 that its geometry is measured rather than guessed.
 
-Video takes the flag too, at 2048 per eye, but a moving picture is the weaker
-case: the same 85% of dark, plus every frame paying for a projection nobody asked
-to see. `--projection flat` remains the default everywhere.
+Video takes the flag too. The patch has to be settled before the first frame is
+decoded — every frame must come out the size of the first — and no clip carries
+a focal length, so it assumes the same 28mm `depth` falls back on. A moving
+picture is still the weaker case: cropping saves the pixels but not the missing
+periphery, and every frame pays for a projection nobody asked to see.
+`--projection flat` remains the default everywhere.
 
 ## Viewing
 
