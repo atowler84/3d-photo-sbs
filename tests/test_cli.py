@@ -3,7 +3,7 @@
 import pytest
 
 from stereocraft import cli
-from stereocraft.pipeline import Settings, VideoSettings
+from stereocraft.pipeline import SBS_TAGS, Settings, VideoSettings, output_path, tag
 
 
 def parse(*argv):
@@ -58,12 +58,65 @@ class TestSettingsFor:
         assert (s.codec, s.crf, s.temporal, s.full_width, s.audio) == ("hevc", 22, 0.8, True, False)
 
 
+class TestNaming:
+    """A player has nothing but the file name to go on -- no JPEG and no mp4 the
+    app writes says how it is meant to be looked at -- so the name is the
+    setting, and getting it wrong shows the wrong thing rather than nothing."""
+
+    @pytest.mark.parametrize("projection,cross,expected", [
+        ("flat", False, "_sbs"),
+        ("flat", True, "_sbs_cross"),
+        ("vr180", False, "_180_sbs"),
+        ("vr180", True, "_180_sbs_cross"),
+    ])
+    def test_every_combination_gets_its_own_name(self, projection, cross, expected):
+        assert tag(Settings(projection=projection, cross_eyed=cross)) == expected
+
+    def test_vr180_carries_both_tokens_a_player_reads(self):
+        """180 sets the projection and sbs the layout, and players key on the two
+        of them separately -- which is why it is not just "_vr180"."""
+        name = tag(Settings(projection="vr180"))
+        assert "180" in name and "sbs" in name
+
+    def test_the_flat_name_has_not_moved(self):
+        """Everything already converted is called this, and renaming it would
+        orphan a library to no purpose."""
+        assert tag(Settings()) == "_sbs"
+
+    def test_the_photo_path_uses_it(self, tmp_path):
+        out = output_path(tmp_path / "a.jpg", None, "auto", tag(Settings(projection="vr180")))
+        assert out.name == "a_180_sbs.jpg"
+
+    def test_the_video_path_uses_it(self, tmp_path):
+        from stereocraft import video
+        out = video.output_path(tmp_path / "a.mov", None,
+                                tag(VideoSettings(projection="vr180", cross_eyed=True)))
+        assert out.name == "a_180_sbs_cross.mp4"
+
+
 class TestCollect:
     def test_finds_photos_and_clips_and_skips_its_own_output(self, tmp_path):
         for name in ("a.jpg", "b.mp4", "c_sbs.jpg", "d_depth.png", "notes.txt"):
             (tmp_path / name).write_bytes(b"x")
         found = {p.name for p in cli.collect([str(tmp_path)])}
         assert found == {"a.jpg", "b.mp4"}
+
+    @pytest.mark.parametrize("name", SBS_TAGS)
+    def test_skips_every_name_it_can_write(self, tmp_path, name):
+        (tmp_path / f"a{name}.jpg").write_bytes(b"x")
+        (tmp_path / f"b{name}.mp4").write_bytes(b"x")
+        assert cli.collect([str(tmp_path)]) == []
+
+    @pytest.mark.parametrize("projection", ["flat", "vr180"])
+    @pytest.mark.parametrize("cross", [False, True])
+    def test_what_it_writes_is_what_it_then_ignores(self, tmp_path, projection, cross):
+        """The round trip, which is the whole point of the list: run it over a
+        folder twice and the second pass must find nothing it made on the first.
+        A name that gets written but not skipped converts the conversions."""
+        settings = Settings(projection=projection, cross_eyed=cross)
+        written = output_path(tmp_path / "a.jpg", None, "auto", tag(settings))
+        written.write_bytes(b"x")
+        assert cli.collect([str(tmp_path)]) == [], f"{written.name} came back round"
 
     def test_says_so_when_something_is_missing(self, capsys):
         assert cli.collect(["definitely-not-here-*.jpg"]) == []

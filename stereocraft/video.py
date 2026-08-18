@@ -34,7 +34,7 @@ import torch.nn.functional as F
 
 from . import budget, stereo, vr180
 from .depth import DEFAULT_FOCAL_35MM, _app_dir, focal_from_35mm
-from .pipeline import OUT_OF_MEMORY, Converter, VideoSettings
+from .pipeline import OUT_OF_MEMORY, Converter, VideoSettings, tag
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mts", ".m2ts", ".wmv", ".flv"}
 # A child of a windowed Windows app is given a console window of its own, so
@@ -306,13 +306,13 @@ def geometry(clip, settings):
     return Geometry(margin=margin, eye=_even(eye), height=_even(clip.height))
 
 
-def output_path(src, dst=None):
+def output_path(src, dst=None, name="_sbs"):
     src = Path(src)
     if dst is None:
-        return src.with_name(f"{src.stem}_sbs.mp4")
+        return src.with_name(f"{src.stem}{name}.mp4")
     dst = Path(dst)
     if dst.is_dir() or dst.suffix == "":
-        return dst / f"{src.stem}_sbs.mp4"
+        return dst / f"{src.stem}{name}.mp4"
     return dst
 
 
@@ -470,7 +470,7 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
                   file=sys.stderr)
 
     geo = geometry(clip, cfg)
-    out = output_path(src, dst)
+    out = output_path(src, dst, tag(cfg))
     out.parent.mkdir(parents=True, exist_ok=True)
     normalizer = TemporalDepth(cfg.temporal)
 

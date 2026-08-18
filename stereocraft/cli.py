@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .pipeline import SUFFIXES, Converter, Settings, VideoSettings
+from .pipeline import SBS_TAGS, SUFFIXES, Converter, Settings, VideoSettings
 from .video import VIDEO_SUFFIXES, clock, convert_video
 
 
@@ -32,7 +32,10 @@ def collect(inputs):
             if not matches:
                 print(f"skipping {item}: not found", file=sys.stderr)
             found += matches
-    return [p for p in found if not p.stem.endswith(("_sbs", "_depth"))]
+    # Its own output, left where it was written.  Pointed at the same folder
+    # twice this would otherwise convert the conversions, and every projection
+    # the app can write has to be listed here or it would do exactly that.
+    return [p for p in found if not p.stem.endswith(SBS_TAGS + ("_depth",))]
 
 
 def oversize_handler(mode):
@@ -256,11 +259,13 @@ def main(argv=None):
     # One converter for the batch either way, so the depth model is loaded once;
     # only the settings on it change as the run moves between stills and clips.
     if args.projection == "vr180":
-        # Nothing in the file says what projection it is yet, and a player that
-        # has to guess will guess flat.  Better said once, up front, than found
-        # out in a headset.
-        print("vr180: no projection metadata is written yet -- set the player to "
-              "equirectangular 180, side-by-side.", file=sys.stderr)
+        # The name is doing the work an st3d/sv3d box should be doing, and it
+        # does it well enough for most players -- but "most" is worth saying out
+        # loud, because the failure is a picture that looks fine and is wrong.
+        print("vr180: written as _180_sbs, which most players read as "
+              "equirectangular 180, side-by-side. Nothing inside the file says "
+              "so, so one that guesses wrong has to be set by hand.",
+              file=sys.stderr)
     converter = Converter(settings_for(args, video=False))
     for_photos, for_videos = converter.settings, settings_for(args, video=True)
     failures = skipped = 0

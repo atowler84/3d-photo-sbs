@@ -32,6 +32,16 @@ photo.jpg  ->  photo_sbs.jpg        (left | right, full width, no downscaling)
 clip.mp4   ->  clip_sbs.mp4         (left | right, half width per eye, sound kept)
 ```
 
+The name says what the file is, because nothing inside it does — players pick
+the projection out of the file name and nowhere else:
+
+```
+_sbs             flat, left | right
+_sbs_cross       flat, right | left, for cross-eyed free-viewing
+_180_sbs         VR180, left | right          (--projection vr180)
+_180_sbs_cross   VR180, right | left
+```
+
 ## Install
 
 ```bash
@@ -449,7 +459,7 @@ knowing before trusting a `--save-depth` map as a measurement.
 | `--limit` | `3.0` | Ceiling on separation, as a percentage of frame width, so something very close cannot demand more parallax than an eye can fuse. |
 | `-m`, `--model` | `da3` | `da3` measures depth in metres. `da2-large`, `da2-base`, `da2-small` only rank it and are fitted onto an assumed range — a fallback, see [which model](#which-model). |
 | `--depth-size` | `auto` photo, `1400` video | Longest side fed to the depth network (shortest, for the `da2` models). `auto` follows the photo up to 2048 px; bigger gives cleaner subject silhouettes, which is what the warp cares about. A clip is pinned, since the finer structure is what the temporal smoothing then averages away. |
-| `--cross` | off | Write right\|left for cross-eyed viewing instead of left\|right. Not a quality setting: it only matters when free-viewing on a monitor. |
+| `--cross` | off | Write right\|left for cross-eyed viewing instead of left\|right. Not a quality setting: it only matters when free-viewing on a monitor. Named `_sbs_cross`, because shown to a headset as an ordinary pair it puts each eye on the other one's view. |
 | `--max-size` | `0` | Cap the output width. Native by default; useful if a viewer chokes on very wide images. |
 | `--format`, `-q` | `auto`, `95` | Output container and JPEG quality. |
 | `--save-depth` | off | Also write a 16-bit `_depth.png`, near white and far black, scaled across its own range so it can be looked at. The two distances it scaled by go in the PNG's metadata as `stereocraft:near_m` and `stereocraft:far_m`, so `metres = far - (value / 65535) * (far - near)` gets them back. Read [where the metres come from](#where-the-metres-come-from) before trusting them. |
@@ -550,7 +560,7 @@ It is also mostly black, and that is not a bug to be fixed later.
 
 ```
 stereocraft --projection vr180 photo.jpg
-photo_sbs.jpg  3536x1768  4mm@0.3m  25% real (28mm assumed)
+photo_180_sbs.jpg  3536x1768  4mm@0.3m  25% real (28mm assumed)
 ```
 
 The `25% real` is the share of the hemisphere the photograph actually reaches,
@@ -592,8 +602,9 @@ EXIF supplies it where a photo still has one. Where it does not, the output says
 metric DA3 checkpoint reports no intrinsics of its own, so a photo stripped of
 its EXIF by a download or a screenshot is guessed at.
 
-**Two things it does not do yet.** No projection metadata is written, so the
-player has to be told: set it to equirectangular 180, side-by-side. And the
+**Two things it does not do yet.** No `st3d`/`sv3d` box is written, so the
+`_180_sbs` in the name is the only thing telling a player what it has — which
+most of them read, and one that does not has to be set by hand. And the
 periphery is empty rather than outpainted, which is the honest state of the art —
 generating it means a 512-tall diffusion model filling 85% of the frame, with
 hallucinated depth behind hallucinated colour, on an app whose whole argument is
@@ -614,10 +625,15 @@ Quest, Pico and Vision Pro read both directly through any local media viewer; on
 a desktop, free-viewing works with the parallel method, or use `--cross` and
 cross your eyes.
 
-Nothing in an mp4 announces that it is side-by-side, so players go by the file
-name and most of them recognise the `_sbs` the output already carries. A player
-that guesses wrong has a setting for it — and a `--projection vr180` file has to
-be told, every time, until the `st3d`/`sv3d` boxes get written.
+Nothing in an mp4 or a JPEG announces how it is meant to be looked at, so
+players go by the file name — which is why each kind of output carries its own.
+`_sbs` and `_180_sbs` are both widely recognised, the second carrying the two
+tokens players key on separately: `180` sets the projection, `sbs` the layout. A
+player that still guesses wrong has a setting for it.
+
+Those names are also how a second run over the same folder knows to leave its own
+output alone, so renaming a file back to something plain will get it converted
+again.
 
 ## License
 

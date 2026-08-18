@@ -18,6 +18,22 @@ pillow_heif.register_heif_opener()
 
 SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
 
+# Every name the app writes.  Nothing inside a JPEG or an mp4 announces how it is
+# meant to be looked at, so players go by the file name -- which makes these load
+# -bearing rather than decorative.  "_180_sbs" carries the two tokens every
+# headset player keys on independently: 180 sets the projection, sbs the layout.
+# Kept in one list because `cli.collect` reads it to avoid converting its own
+# output all over again when it is pointed at a folder twice.
+SBS_TAGS = ("_sbs", "_sbs_cross", "_180_sbs", "_180_sbs_cross")
+
+
+def tag(settings):
+    """What to call the output, which is the only way a player will know what it
+    is looking at.  A cross-eyed pair is right|left, and shown to a headset as
+    though it were left|right it puts each eye on the other one's view."""
+    name = "_180_sbs" if settings.projection == "vr180" else "_sbs"
+    return f"{name}_cross" if settings.cross_eyed else name
+
 
 @dataclass
 class Settings:
@@ -183,16 +199,16 @@ def load_image(path, size=None):
         return np.array(ImageOps.exif_transpose(img).convert("RGB"))
 
 
-def output_path(src, dst, fmt):
+def output_path(src, dst, fmt, name="_sbs"):
     src = Path(src)
     ext = src.suffix.lower() if fmt == "auto" else f".{fmt}"
     if ext not in (".jpg", ".jpeg", ".png"):
         ext = ".jpg"
     if dst is None:
-        return src.with_name(f"{src.stem}_sbs{ext}")
+        return src.with_name(f"{src.stem}{name}{ext}")
     dst = Path(dst)
     if dst.is_dir() or dst.suffix == "":
-        return dst / f"{src.stem}_sbs{ext}"
+        return dst / f"{src.stem}{name}{ext}"
     return dst
 
 
@@ -480,7 +496,7 @@ class Converter:
             size = (max(1, round(sbs.shape[1] * scale)), cfg.max_size)
             sbs = F.interpolate(sbs[None], size=size, mode="bilinear", align_corners=False, antialias=True)[0]
 
-        out = save_image(_to_uint8(sbs), output_path(src, dst, cfg.fmt), cfg.quality)
+        out = save_image(_to_uint8(sbs), output_path(src, dst, cfg.fmt, tag(cfg)), cfg.quality)
         if cfg.save_depth:
             save_depth_map(inverse, out.with_name(f"{Path(src).stem}_depth.png"))
 
