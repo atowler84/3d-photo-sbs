@@ -32,8 +32,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from . import budget, stereo
-from .depth import _app_dir
+from . import budget, stereo, vr180
+from .depth import DEFAULT_FOCAL_35MM, _app_dir, focal_from_35mm
 from .pipeline import OUT_OF_MEMORY, Converter, VideoSettings
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mts", ".m2ts", ".wmv", ".flv"}
@@ -283,7 +283,24 @@ def geometry(clip, settings):
     in.  That is what players and headsets expect and what their hardware
     decoders can keep up with; `full_width` keeps every native pixel instead and
     doubles the frame, which is past what most of them will decode above 1080p.
+
+    A vr180 clip has no say in the matter: the projection is 180 degrees square
+    per eye whatever went in, and the only free choice is how many pixels to
+    spend on it.  A still asks the depth model what lens it was taken with and
+    sizes itself to keep that lens's detail; a clip cannot, because every frame
+    has to come out the size of the first and the first has not been through the
+    model yet.  So it assumes the lens most cameras have, which is the same
+    assumption `depth` falls back on when a photo has lost its EXIF, and caps the
+    result -- rather than going straight to the cap and upscaling a small clip to
+    it for no reason.
     """
+    if settings.projection == "vr180":
+        if settings.vr180_size in (None, 0, "auto"):
+            assumed = focal_from_35mm(DEFAULT_FOCAL_35MM, clip.width)
+            size = vr180.per_eye(clip.width, assumed, settings.vr180_cap)
+        else:
+            size = vr180.even(settings.vr180_size)
+        return Geometry(margin=0, eye=size, height=size)
     margin = stereo.max_margin(clip.width, settings.limit_pct)
     eye = clip.width - 2 * margin if settings.full_width else clip.width // 2
     return Geometry(margin=margin, eye=_even(eye), height=_even(clip.height))
@@ -464,6 +481,9 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
     # to Torch does not have to copy it first.
     frame = np.frombuffer(buffer, np.uint8).reshape(clip.height, clip.width, 3)
 
+    # Pinned for every frame when the projection is a sphere, and meaningless
+    # when it is not.
+    square = geo.eye if cfg.projection == "vr180" else None
     done, cancelled = 0, False
     # What the caller asked for, to be put back afterwards: a clip that had
     # to finish on the CPU should not decide that for the clips behind it,
@@ -476,12 +496,14 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
             try:
                 while _read_exactly(decoder.stdout, view) == frame_bytes:
                     try:
-                        left, right, _ = converter.render(frame, normalizer, geo.margin)
+                        left, right, _ = converter.render(frame, normalizer, geo.margin,
+                                                          size=square)
                     except OUT_OF_MEMORY:
                         if not _fall_back_to_cpu(converter):
                             raise
                         normalizer.reset()  # its memory is on a device we have just left
-                        left, right, _ = converter.render(frame, normalizer, geo.margin)
+                        left, right, _ = converter.render(frame, normalizer, geo.margin,
+                                                          size=square)
 
                     left = _squeeze(left, geo.eye, geo.height)
                     right = _squeeze(right, geo.eye, geo.height)
@@ -531,6 +553,8 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
             "output_size": (geo.width, geo.height),
             "frames": done,
             "cuts": normalizer.cuts,
+            "coverage": converter.covered,
+            "lens": converter.lens,
             "fps": clip.fps,
             "seconds": seconds,
         }

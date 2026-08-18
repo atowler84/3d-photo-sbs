@@ -70,6 +70,46 @@ class TestGeometry:
         assert video.geometry(clip, settings).margin == stereo.max_margin(1920, settings.limit_pct)
 
 
+class TestVr180Geometry:
+    """A clip on a sphere: square per eye, no trim, and sized without the lens."""
+
+    def test_each_eye_is_square_and_the_pair_is_two_to_one(self):
+        g = video.geometry(video.Clip(1920, 1080, 30.0, 100, 3.3),
+                           VideoSettings(projection="vr180"))
+        assert g.eye == g.height
+        assert g.width == 2 * g.height
+
+    def test_nothing_is_trimmed(self):
+        """The sliver only one eye reaches is angle here, and cutting it would
+        put every remaining pixel at the wrong bearing."""
+        g = video.geometry(video.Clip(1920, 1080, 30.0, 100, 3.3),
+                           VideoSettings(projection="vr180"))
+        assert g.margin == 0
+
+    def test_an_explicit_size_is_taken(self):
+        g = video.geometry(video.Clip(1920, 1080, 30.0, 100, 3.3),
+                           VideoSettings(projection="vr180", vr180_size=1024))
+        assert g.eye == 1024
+
+    def test_a_small_clip_is_not_blown_up_to_the_cap(self):
+        """The cap is a ceiling, not a target.  Going straight to it would
+        upscale a 320-wide clip more than six times over for nothing."""
+        g = video.geometry(video.Clip(320, 240, 30.0, 30, 1.0),
+                           VideoSettings(projection="vr180"))
+        assert g.eye < VideoSettings.vr180_cap
+        assert g.eye == pytest.approx(320 * 180 / 65.47, abs=2)
+
+    def test_a_large_one_stops_at_the_cap(self):
+        g = video.geometry(video.Clip(3840, 2160, 30.0, 30, 1.0),
+                           VideoSettings(projection="vr180"))
+        assert g.eye == VideoSettings.vr180_cap
+
+    @pytest.mark.parametrize("w", [321, 641, 1001])
+    def test_the_square_comes_out_even(self, w):
+        g = video.geometry(video.Clip(w, w, 30.0, 10, 1.0), VideoSettings(projection="vr180"))
+        assert g.width % 2 == 0 and g.height % 2 == 0
+
+
 class TestEncoders:
     def test_prefers_x264_when_it_is_there(self):
         video._ENCODERS_SEEN = None

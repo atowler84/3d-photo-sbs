@@ -63,6 +63,55 @@ class TestPhoto:
         assert width % 2 == 0 and width <= 2 * 320
 
 
+class TestVr180:
+    """The spherical projection, run for real rather than on synthetic tensors."""
+
+    def convert(self, converter, photo, out, **kwargs):
+        was = converter.settings
+        converter.settings = Settings(projection="vr180", **kwargs)
+        try:
+            return converter.convert(photo, out)
+        finally:
+            converter.settings = was
+
+    def test_each_eye_is_square_and_the_pair_is_two_to_one(self, converter, photo, tmp_path):
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
+        assert info["output_size"] == (384, 192)
+
+    def test_the_eyes_differ_but_the_void_does_not(self, converter, photo, tmp_path):
+        """Where there is picture the two eyes must disagree; where there is
+        nothing they must agree exactly, both being black."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
+        out = np.asarray(Image.open(info["output"])).astype(int)
+        left, right = out[:, :192], out[:, 192:]
+        assert not np.array_equal(left, right)
+        corner = (slice(0, 20), slice(0, 20))  # a pole, which no lens ever reaches
+        assert left[corner].max() < 8 and right[corner].max() < 8
+
+    def test_reports_how_much_of_the_sphere_is_real(self, converter, photo, tmp_path):
+        """The number that decides whether the result is worth having, so it is
+        worth failing over rather than trusting."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
+        assert 0.0 < info["coverage"] < 0.5, "a rectilinear photo cannot fill a hemisphere"
+
+    def test_the_flat_path_reports_no_coverage_at_all(self, converter, photo, tmp_path):
+        assert converter.convert(photo, tmp_path / "flat.jpg")["coverage"] is None
+
+    def test_says_when_the_lens_was_only_assumed(self, converter, photo, tmp_path):
+        """A wrong focal length rescales a flat scene harmlessly and puts a
+        spherical one at the wrong apparent size, so a guess has to be owned up
+        to rather than quietly used."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=128)
+        assert info["lens"] in ("model", "exif", "assumed")
+        # The fixture photo is generated, so it carries no EXIF to read.
+        assert info["lens"] == "assumed"
+
+    def test_auto_sizing_asks_for_the_photo_s_own_detail(self, converter, photo, tmp_path):
+        """320 pixels across a phone's 65 degrees wants about 880 across 180."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg")
+        assert 700 <= info["output_size"][1] <= 1100
+
+
 class TestVideo:
     def test_every_frame_survives_with_audio(self, converter, clip, tmp_path):
         """-shortest once cost three frames off the end of a ninety-frame clip,

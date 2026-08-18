@@ -453,6 +453,8 @@ knowing before trusting a `--save-depth` map as a measurement.
 | `--max-size` | `0` | Cap the output width. Native by default; useful if a viewer chokes on very wide images. |
 | `--format`, `-q` | `auto`, `95` | Output container and JPEG quality. |
 | `--save-depth` | off | Also write a 16-bit `_depth.png`, near white and far black, scaled across its own range so it can be looked at. The two distances it scaled by go in the PNG's metadata as `stereocraft:near_m` and `stereocraft:far_m`, so `metres = far - (value / 65535) * (far - near)` gets them back. Read [where the metres come from](#where-the-metres-come-from) before trusting them. |
+| `--projection` | `flat` | `flat` writes a rectilinear pair, shown on a virtual screen. `vr180` wraps the same geometry onto a hemisphere at its true angular scale — see [VR180](#vr180). |
+| `--vr180-size` | `auto` | Per-eye square for `--projection vr180`. `auto` asks for as much of the photo's own detail as fits under 4096 (2048 for a clip). |
 | `--device` | `auto` | `cuda`, `mps` or `cpu`. |
 | `--oversize` | `ask` | A photo too big for memory: `ask` what to do, `skip` it, or `resize` it to the largest size that fits. |
 
@@ -472,6 +474,7 @@ As a library:
 import stereocraft
 stereocraft.convert("photo.jpg", eyes_mm=65, focus_m=3)
 stereocraft.convert_video("clip.mp4", target_pct=1.0)
+stereocraft.convert("photo.jpg", projection="vr180")
 ```
 
 ## Tests
@@ -535,6 +538,71 @@ There is no mesh, no inpainting network and no OpenGL context: the whole render
 is a handful of tensor ops, which is why it runs at native resolution rather than
 the 768px ceiling a mesh pipeline imposes.
 
+## VR180
+
+`--projection vr180` writes the same stereo geometry wrapped onto a 180-degree
+hemisphere instead of laid on a plane. The difference in a headset is real: a
+flat pair is a screen hanging in front of you at whatever size the player feels
+like, where VR180 puts the picture at its **true angular scale**, so something
+that subtended thirty degrees to the camera subtends thirty degrees to you.
+
+It is also mostly black, and that is not a bug to be fixed later.
+
+```
+stereocraft --projection vr180 photo.jpg
+photo_sbs.jpg  3536x1768  4mm@0.3m  25% real (28mm assumed)
+```
+
+The `25% real` is the share of the hemisphere the photograph actually reaches,
+by solid angle. A 28mm phone lens covers 65 by 51 degrees, which is 15% of what
+you can turn your head and look at; a 16mm ultrawide manages 30%. The rest is
+dark because nothing was ever pointed at it. The edge is faded rather than cut,
+on the grounds that an honest absence reads better than a hard-edged rectangle
+floating in a void — but no amount of projection will invent a periphery the
+camera did not record.
+
+| Lens | Field of view | Real | Invented |
+| --- | --- | --- | --- |
+| 28mm (most phones) | 65.5° × 51.5° | 15% | 85% |
+| 24mm | 73.7° × 53.1° | 17% | 83% |
+| 16mm ultrawide | 96.7° × 73.7° | 30% | 70% |
+| 13mm ultrawide | 108.3° × 92.2° | 40% | 60% |
+
+**Resolution is the other cost.** Keeping the photograph's own detail means
+giving the sphere the pixels per degree the photograph had, which for a 65-degree
+lens is a square nearly three times the source width — 11000 a side for a 4000px
+photo. That is asked for and then capped at 4096, so a large photo is used softer
+than it arrived. `--vr180-size` sets it by hand.
+
+**It is a different question from the flat path, so it is asked differently.**
+`--target` and `--limit` are percentages of frame width, and a percentage of a
+180-degree frame is not a quantity anyone's comfort is described in — 2% of it is
+3.6 degrees of parallax, several times what an eye can fuse. So the spherical
+path aims at 0.6 degrees of near-to-far separation and caps at 1.2, in `vr180.py`.
+`--eyes` and `--focus` still mean what they always did.
+
+**The lens stops being a detail.** [Where the metres come
+from](#where-the-metres-come-from) notes that a focal length wrong by some factor
+only rescales the scene, and the focus distance absorbs it. That is true while
+the picture stays flat and false the moment it goes on a sphere: the focal length
+is precisely what decides where each pixel lands *in angle*, so a wrong one puts
+the whole picture at the wrong apparent size — convincing, and not life-sized.
+EXIF supplies it where a photo still has one. Where it does not, the output says
+`(28mm assumed)`, because a guessed angular scale is worth admitting to. The
+metric DA3 checkpoint reports no intrinsics of its own, so a photo stripped of
+its EXIF by a download or a screenshot is guessed at.
+
+**Two things it does not do yet.** No projection metadata is written, so the
+player has to be told: set it to equirectangular 180, side-by-side. And the
+periphery is empty rather than outpainted, which is the honest state of the art —
+generating it means a 512-tall diffusion model filling 85% of the frame, with
+hallucinated depth behind hallucinated colour, on an app whose whole argument is
+that its geometry is measured rather than guessed.
+
+Video takes the flag too, at 2048 per eye, but a moving picture is the weaker
+case: the same 85% of dark, plus every frame paying for a projection nobody asked
+to see. `--projection flat` remains the default everywhere.
+
 ## Viewing
 
 A photo comes out full-width SBS: each eye keeps its own full width, so the file
@@ -548,7 +616,8 @@ cross your eyes.
 
 Nothing in an mp4 announces that it is side-by-side, so players go by the file
 name and most of them recognise the `_sbs` the output already carries. A player
-that guesses wrong has a setting for it.
+that guesses wrong has a setting for it — and a `--projection vr180` file has to
+be told, every time, until the `st3d`/`sv3d` boxes get written.
 
 ## License
 

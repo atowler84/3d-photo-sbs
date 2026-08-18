@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageOps
 
-from . import budget, stereo
+from . import budget, stereo, vr180
 from .depth import DepthEstimator, exif_focal
 
 pillow_heif.register_heif_opener()
@@ -43,6 +43,15 @@ class Settings:
     fmt: str = "auto"
     save_depth: bool = False
     device: str = "auto"
+    # "flat" writes the rectilinear pair that every 3D-TV and VR player will show
+    # on a virtual screen.  "vr180" wraps the same geometry onto a hemisphere at
+    # its true angular scale instead, which is more immersive where the photo
+    # reaches and simply dark where it does not -- see `vr180`.
+    projection: str = "flat"
+    # Per-eye square for the vr180 projection, or auto to ask for the photo's own
+    # detail and settle for `vr180_cap`.
+    vr180_size: object = "auto"
+    vr180_cap: int = vr180.MAX_SIZE
     # Called when a photo will not fit, with the `TooBig` describing it, and
     # expected to return "resize" or "skip".  Left unset nothing is ever
     # silently downscaled: the photo is skipped and the caller told why.
@@ -75,6 +84,9 @@ class VideoSettings(Settings):
 
     target_pct: float = 1.3
     depth_size: object = 1400
+    # Lower than a still's, because every frame has to come back out of a
+    # hardware decoder and 2048 per eye is already 4096 across.
+    vr180_cap: int = vr180.VIDEO_MAX_SIZE
     # Squeeze each eye to half width, so the clip comes out the size it went in.
     # That is what players and headsets expect, and what their hardware decoders
     # can actually keep up with -- full width doubles it, and 4K doubled is past
@@ -258,6 +270,12 @@ class Converter:
         # keeping because `auto` picks them per scene, and a result that is too
         # strong or too flat is hard to correct without knowing where it started.
         self.chose = (None, None)
+        # Fraction of the last vr180 frame that came from the photograph rather
+        # than from nowhere.  None after a flat render, which is all coverage.
+        self.covered = None
+        # Where the lens came from: "model", "exif" or "assumed".  Worth keeping
+        # because it means far more to a sphere than to a plane -- see `render`.
+        self.lens = None
 
     @property
     def depth_model(self):
@@ -338,21 +356,23 @@ class Converter:
                       budget.free_bytes(device) or 0, self.settings.limit_pct,
                       None if target else budget.smaller_model(estimator, *source, size, device))
 
-    def geometry(self, inverse, width, focal):
+    def geometry(self, inverse, width, focal, target=None):
         """Eye separation in mm and screen plane in metres, for this scene.
 
         Either can be pinned to a number, in which case it is taken at face value
-        and the other is still chosen to suit.
+        and the other is still chosen to suit.  `target` overrides what auto aims
+        for, which is how the vr180 path asks in degrees of arc for what the flat
+        one asks in percent of frame width -- the same logic, different units.
         """
         cfg = self.settings
-        eyes, focus = stereo.auto_geometry(inverse, width, focal, cfg.target_pct)
+        eyes, focus = stereo.auto_geometry(inverse, width, focal, target or cfg.target_pct)
         if cfg.eyes_mm != "auto":
             eyes = float(cfg.eyes_mm)
         if cfg.focus_m != "auto":
             focus = float(cfg.focus_m)
         return eyes, focus
 
-    def render(self, image, normalizer=None, margin=None, focal=None):
+    def render(self, image, normalizer=None, margin=None, focal=None, size=None):
         """One frame in; the two eye views and the depth map behind them out.
 
         Composing is left to the caller because a video squeezes each eye to half
@@ -363,12 +383,17 @@ class Converter:
         that remembers the frames before this one, and `margin` pins the edge
         trim so a clip cannot change size part-way through.  A still passes
         neither and gets exactly what it always did.
+
+        `size` pins the vr180 per-eye square, for the same reason `margin`
+        exists: left to size itself from the lens it could come out different
+        from one frame to the next, and no encoder will take that.
         """
         cfg = self.settings
         estimator = self.depth_model
         width = image.shape[1]
 
         depth = estimator(image, cfg.depth_size, focal)
+        self.lens = depth.source
         rgb = (torch.from_numpy(np.ascontiguousarray(image)).to(estimator.device)
                .permute(2, 0, 1).float().div_(255.0))
         guide = rgb.mean(0)[None, None]
@@ -385,10 +410,45 @@ class Converter:
 
         # The lens, restated in pixels at the width actually being rendered.
         focal_full = depth.focal * width / depth.working[1]
+        if cfg.projection == "vr180":
+            return self._render_vr180(rgb, inverse, focal_full, size)
+
         eyes, focus = self.geometry(inverse, width, focal_full)
         half = stereo.half_disparity(inverse, focal_full, eyes, focus, cfg.limit_pct, width)
         left, right = stereo.make_pair(rgb, half, margin)
         self.chose = (eyes, focus)  # what `auto` settled on, for whoever reports it
+        self.covered = None  # a flat frame is photograph edge to edge
+        return left, right, inverse
+
+    def _render_vr180(self, rgb, inverse, focal_full, size=None):
+        """The same frame, on a hemisphere instead of a plane.
+
+        The depth map is not re-estimated here.  It was measured on the
+        photograph, which is the only shape the network understands, and is
+        warped across with the colour -- see `vr180` for why that ordering is
+        not negotiable.
+
+        **The lens matters here in a way it does not on a plane.**  `Depth` notes
+        that a focal length wrong by some factor only rescales the scene, which
+        the focus distance then absorbs -- true when the picture stays flat, and
+        false the moment it goes on a sphere.  The focal length is what decides
+        where each pixel lands in angle, so getting it wrong puts the whole
+        picture at the wrong apparent size: right-looking, and not life-sized.
+        EXIF supplies it where a photo still has any, and `depth.source` says so
+        when it does not, because a guessed angular scale is worth admitting to.
+        """
+        cfg = self.settings
+        if size is None:
+            size = (vr180.per_eye(rgb.shape[2], focal_full, cfg.vr180_cap)
+                    if cfg.vr180_size in (None, 0, "auto") else vr180.even(cfg.vr180_size))
+        # Asked against the projection rather than the photo: a baseline is a
+        # distance in millimetres either way, but what counts as enough of one
+        # is set by how far the picture is stretched, and here that is 180
+        # degrees rather than the lens's sixty-odd.
+        eyes, focus = self.geometry(inverse, size, vr180.per_radian(size), vr180.auto_target())
+        left, right, mask = vr180.render(rgb, inverse, focal_full, eyes, focus, size)
+        self.chose = (eyes, focus)
+        self.covered = vr180.coverage(mask)
         return left, right, inverse
 
     def _run(self, src, dst, size=None):
@@ -432,6 +492,8 @@ class Converter:
             "output_size": (sbs.shape[2], sbs.shape[1]),
             "eyes_mm": self.chose[0],
             "focus_m": self.chose[1],
+            "coverage": self.covered,
+            "lens": self.lens,
             "seconds": time.perf_counter() - started,
         }
 

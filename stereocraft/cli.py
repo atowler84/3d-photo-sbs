@@ -109,6 +109,14 @@ def build_parser():
     # translating them into a number that only looks like what was asked for.
     parser.add_argument("-d", "--disparity", type=float, help=argparse.SUPPRESS)
     parser.add_argument("-c", "--convergence", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--projection", choices=("flat", "vr180"), default="flat",
+                        help="flat writes a rectilinear pair, which a player shows on a virtual "
+                             "screen. vr180 wraps it onto a 180-degree hemisphere at its true "
+                             "angular scale instead -- more immersive where the photo reaches, "
+                             "and dark where it does not, which is most of it")
+    parser.add_argument("--vr180-size", type=int, default=None, metavar="PX",
+                        help="per-eye square for --projection vr180. (default: as much of the "
+                             "photo's own detail as fits under 4096 for a photo, 2048 for a clip)")
     parser.add_argument("--cross", action="store_true", help="write right|left for cross-eyed viewing")
     parser.add_argument("--max-size", type=int, default=0, help="cap the output width, 0 for native")
     parser.add_argument("--format", choices=("auto", "jpg", "png"), default="auto", dest="fmt")
@@ -184,6 +192,7 @@ def settings_for(args, video):
         limit_pct=args.limit,
         cross_eyed=args.cross,
         device=args.device,
+        projection=args.projection,
         on_oversize=oversize_handler(args.oversize),
     )
     if video:
@@ -198,6 +207,8 @@ def settings_for(args, video):
         settings.target_pct = args.target
     if args.depth_size is not None:
         settings.depth_size = args.depth_size
+    if args.vr180_size is not None:
+        settings.vr180_size = args.vr180_size
     return settings
 
 
@@ -244,6 +255,12 @@ def main(argv=None):
 
     # One converter for the batch either way, so the depth model is loaded once;
     # only the settings on it change as the run moves between stills and clips.
+    if args.projection == "vr180":
+        # Nothing in the file says what projection it is yet, and a player that
+        # has to guess will guess flat.  Better said once, up front, than found
+        # out in a headset.
+        print("vr180: no projection metadata is written yet -- set the player to "
+              "equirectangular 180, side-by-side.", file=sys.stderr)
     converter = Converter(settings_for(args, video=False))
     for_photos, for_videos = converter.settings, settings_for(args, video=True)
     failures = skipped = 0
@@ -284,6 +301,17 @@ def main(argv=None):
         # this there is nothing to adjust from when a result wants tuning.
         eyes, focus = info.get("eyes_mm"), info.get("focus_m")
         chose = f"  {eyes:.0f}mm@{focus:.1f}m" if eyes else ""
+        # How much of a vr180 frame is photograph and how much is the dark it was
+        # never pointed at.  The single most useful number about the result, and
+        # the one nobody would think to ask for until they had put it on.
+        if info.get("coverage") is not None:
+            chose += f"  {info['coverage']:.0%} real"
+            # On a plane a wrong lens only rescales the scene and the focus
+            # distance absorbs it.  On a sphere it decides where every pixel
+            # lands in angle, so a guessed one means a picture at the wrong
+            # apparent size -- which looks entirely fine, and is not.
+            if info.get("lens") == "assumed":
+                chose += " (28mm assumed)"
         print(f"{prefix}{info['output']}  {width}x{height}{chose}{note}  {taken}")
     if skipped:
         print(f"{skipped} file{'s' if skipped > 1 else ''} skipped as too large", file=sys.stderr)
