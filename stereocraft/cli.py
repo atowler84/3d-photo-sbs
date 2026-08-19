@@ -118,15 +118,9 @@ def build_parser():
                              "angular scale instead -- more immersive where the photo reaches, "
                              "and dark where it does not, which is most of it")
     parser.add_argument("--vr180-size", type=int, default=None, metavar="PX",
-                        help="stored width per eye for --projection vr180. Only the piece of "
-                             "sphere the picture covers is stored, so this buys picture rather "
-                             "than dark. (default: the source's own width, capped at 4096 for a "
-                             "photo and 2048 for a clip)")
-    parser.add_argument("--vr180-crop", action="store_true",
-                        help="store only the piece of sphere the picture covers, rather than the "
-                             "whole 180-degree square. Saves four fifths of the pixels and needs "
-                             "a player that reads GPano or the projection bounds -- Skybox does "
-                             "not, and shows a cropped patch far too close and stretched")
+                        help="stored width per eye for --projection vr180, each eye being a "
+                             "square 180 degrees across. (default: as much of the source's own "
+                             "detail as fits, capped at 4096 for a photo and 2048 for a clip)")
     parser.add_argument("--cross", action="store_true", help="write right|left for cross-eyed viewing")
     parser.add_argument("--max-size", type=int, default=0, help="cap the output width, 0 for native")
     parser.add_argument("--format", choices=("auto", "jpg", "png"), default="auto", dest="fmt")
@@ -203,7 +197,6 @@ def settings_for(args, video):
         cross_eyed=args.cross,
         device=args.device,
         projection=args.projection,
-        vr180_crop=args.vr180_crop,
         on_oversize=oversize_handler(args.oversize),
     )
     if video:
@@ -266,13 +259,6 @@ def main(argv=None):
 
     # One converter for the batch either way, so the depth model is loaded once;
     # only the settings on it change as the run moves between stills and clips.
-    if args.projection == "vr180" and args.vr180_crop:
-        # Worth one line, because the failure is not a picture that looks broken
-        # -- it is one that looks fine and sits at the wrong size.
-        print("vr180: --vr180-crop needs a player that reads GPano or the "
-              "projection bounds. One that does not assumes a full 180 by 180 "
-              "and will show the picture too close and stretched sideways.",
-              file=sys.stderr)
     converter = Converter(settings_for(args, video=False))
     for_photos, for_videos = converter.settings, settings_for(args, video=True)
     failures = skipped = 0

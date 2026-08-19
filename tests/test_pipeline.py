@@ -82,30 +82,21 @@ class TestVr180:
         assert info["output_size"] == (2 * spot.width, spot.height)
         assert spot.width == spot.height == 192, "the default frame is the square"
 
-    def test_a_cropped_frame_is_mostly_picture(self, converter, photo, tmp_path):
-        """Cropping still does what it was built for -- it is simply not the
-        default, because no player yet reads where the piece belongs."""
-        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192,
-                            vr180_crop=True)
-        out = np.asarray(Image.open(info["output"])).astype(int)
-        lit = (out.max(axis=2) > 8).mean()
-        assert lit > 0.8, "a cropped patch should be picture nearly all the way out"
-
-    def test_the_square_is_mostly_dark_and_is_the_default_anyway(
-            self, converter, photo, tmp_path):
-        """The dark is the price of a frame that needs no metadata read to sit
-        at the right size, which is the trade every player currently forces."""
+    def test_the_frame_is_mostly_dark(self, converter, photo, tmp_path):
+        """The price of the format: a rectilinear lens cannot fill a hemisphere,
+        and storing only the part it reached needs a player that reads where the
+        part belongs.  None does, so the dark is written."""
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
         out = np.asarray(Image.open(info["output"])).astype(int)
         assert (out.max(axis=2) > 8).mean() < 0.35
 
-    def test_cropping_does_not_change_how_much_sphere_is_real(self, converter, photo, tmp_path):
-        """Fewer pixels, same picture, same place.  If this moves, the crop has
+    def test_resolution_does_not_change_how_much_sphere_is_real(
+            self, converter, photo, tmp_path):
+        """More pixels, same picture, same place.  If this moves, the sizing has
         quietly changed the field of view rather than just the file size."""
-        tight = self.convert(converter, photo, tmp_path / "a.jpg", vr180_size=192,
-                             vr180_crop=True)
-        square = self.convert(converter, photo, tmp_path / "b.jpg", vr180_size=192)
-        assert tight["coverage"] == pytest.approx(square["coverage"], rel=0.05)
+        small = self.convert(converter, photo, tmp_path / "a.jpg", vr180_size=192)
+        large = self.convert(converter, photo, tmp_path / "b.jpg", vr180_size=384)
+        assert small["coverage"] == pytest.approx(large["coverage"], rel=0.05)
 
     def test_the_eyes_differ_but_the_void_does_not(self, converter, photo, tmp_path):
         """Where there is picture the two eyes must disagree; where there is
@@ -118,8 +109,8 @@ class TestVr180:
         assert left[corner].max() < 8 and right[corner].max() < 8
 
     def test_it_says_where_on_the_sphere_it_belongs(self, converter, photo, tmp_path):
-        """A cropped patch with no GPano is not shown small, it is stretched
-        across the whole 180 degrees -- so the metadata is part of the change."""
+        """A hemisphere is half a sphere, so there is a placement to record even
+        when the frame is the whole square the format asks for."""
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
         written = Path(info["output"]).read_bytes()
         spot = info["patch"]
@@ -143,10 +134,10 @@ class TestVr180:
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=128)
         assert info["lens"] == "assumed", "the fixture photo carries no EXIF"
 
-    def test_auto_sizing_keeps_the_photo_s_own_width_when_cropped(
-            self, converter, photo, tmp_path):
-        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_crop=True)
-        assert info["patch"].width == 320
+    def test_auto_sizing_asks_for_the_photo_s_own_detail(self, converter, photo, tmp_path):
+        """320 pixels across a phone's 65 degrees wants about 880 across 180."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg")
+        assert info["patch"].width == pytest.approx(320 * 180 / 65.47, abs=2)
 
 
 class TestVideo:

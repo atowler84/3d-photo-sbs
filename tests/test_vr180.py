@@ -46,14 +46,16 @@ class TestLens:
 
 
 class TestPatch:
-    """Where the stored picture sits in the 360-by-180 frame it is a piece of."""
+    """Where the stored frame sits in the 360-by-180 one it is a piece of.
 
-    def test_a_lens_covers_exactly_its_own_angles(self):
-        """The azimuth a column lands at is atan(u/f) and does not depend on the
-        row, so the patch needs no searching for -- it is the lens."""
+    A hemisphere is half a sphere, so there is a placement to get right even
+    though the frame is always the whole square.
+    """
+
+    def test_it_is_always_the_square_the_format_asks_for(self):
         spot = vr180.patch(lens(28, 4000), 4000, 3000)
-        assert spot.span_az == pytest.approx(vr180.fov(lens(28, 4000), 4000))
-        assert spot.span_el == pytest.approx(vr180.fov(lens(28, 4000), 3000))
+        assert spot.span_az == spot.span_el == 180.0
+        assert spot.width == spot.height
 
     def test_the_full_frame_it_belongs_to_is_two_to_one(self):
         """Equirectangular is 360 across and 180 down.  If the stored piece does
@@ -66,25 +68,21 @@ class TestPatch:
         assert spot.left == pytest.approx((spot.full_width - spot.width) / 2, abs=1)
         assert spot.top == pytest.approx((spot.full_height - spot.height) / 2, abs=1)
 
-    def test_a_full_frame_is_the_square_the_format_asks_for(self):
-        spot = vr180.patch(lens(28, 1000), 1000, 750, full=True)
-        assert spot.span_az == spot.span_el == 180.0
-        assert spot.width == spot.height
-        assert not spot.cropped
-
-    def test_a_full_frame_is_half_the_sphere_across(self):
-        """180 of a possible 360, so a quarter falls off each side -- which is
-        the whole of what makes a VR180 file VR180 rather than 360."""
-        spot = vr180.patch(lens(28, 1000), 1000, 750, full=True)
+    def test_it_is_half_the_sphere_across_and_all_of_it_down(self):
+        """180 of a possible 360, so a quarter falls off each side and nothing
+        off the top -- which is the whole of what makes a file VR180 and not
+        360, and the reason the placement matters even without a tighter crop."""
+        spot = vr180.patch(lens(28, 1000), 1000, 750)
         assert spot.full_width == 2 * spot.width
         assert spot.full_height == spot.height
+        assert spot.top == 0
+        assert spot.left == spot.width // 2
 
-    def test_cropping_keeps_the_source_s_own_width(self):
-        """The point of the whole exercise: stored at its own width the picture
-        keeps its own detail, where the square gave it whatever share of itself
-        its lens had earned."""
-        spot = vr180.patch(lens(28, 3000), 3000, 2000)
-        assert spot.width == 3000
+    def test_it_asks_for_the_angular_density_the_photo_had(self):
+        """A 65-degree lens over 180 degrees of frame wants a square nearly three
+        times the source width, which is what keeps the source's own detail."""
+        spot = vr180.patch(lens(28, 1000), 1000, 750, cap=100000)
+        assert spot.width == pytest.approx(1000 * 180 / 65.47, abs=2)
 
     def test_the_cap_is_a_cap(self):
         assert vr180.patch(lens(28, 9000), 9000, 6000, cap=4096).width == 4096
@@ -99,34 +97,8 @@ class TestPatch:
     def test_pixels_per_radian_follows_the_span(self):
         """Half the angle in the same pixels is twice the density, and the
         disparity is measured against it."""
-        wide = vr180.patch(lens(14, 1000), 1000, 1000, size=1000)
-        narrow = vr180.patch(lens(50, 1000), 1000, 1000, size=1000)
-        assert narrow.per_radian > wide.per_radian
-
-
-class TestCropPaysForItself:
-    """The reason cropping exists, stated as a number rather than a hope."""
-
-    @pytest.mark.parametrize("equivalent_mm,gain", [(16, 1.86), (28, 2.75), (49, 4.47)])
-    def test_the_picture_gets_the_whole_width_instead_of_its_share(self, equivalent_mm, gain):
-        """In the square a lens got only its angular share of the pixels -- 180
-        degrees of frame, and the picture covering however much of it the lens
-        managed.  Cropped, the whole stored width is picture, and the gain is
-        exactly the reciprocal of the share it used to get."""
-        src, stored = 1200, 600
-        focal = lens(equivalent_mm, src)
-        cropped = vr180.patch(focal, src, src, size=stored)
-        in_square = stored * vr180.fov(focal, src) / 180.0
-        assert cropped.width == stored
-        assert cropped.width / in_square == pytest.approx(gain, rel=0.01)
-
-    def test_a_narrow_lens_gains_the_most(self):
-        """A 49mm lens fills 5% of a hemisphere against a 16mm's 30%, so it is
-        the one the square treated worst and the one cropping rescues hardest."""
-        src = 1200
-        wide = 180.0 / vr180.fov(lens(16, src), src)
-        narrow = 180.0 / vr180.fov(lens(49, src), src)
-        assert narrow > wide * 2
+        assert vr180.Patch(90.0, 90.0, 1000, 1000).per_radian == pytest.approx(
+            2 * vr180.Patch(180.0, 180.0, 1000, 1000).per_radian)
 
 
 class TestProjection:
@@ -150,13 +122,11 @@ class TestProjection:
         assert u == pytest.approx((src - 1) / 2 + focal * math.tan(azimuth), abs=0.01)
         assert bool(valid[0, col])
 
-    def test_a_cropped_patch_reads_the_same_angles_as_a_full_one(self):
-        """Cropping must move nothing.  A column at a given bearing has to come
-        from the same place in the photograph either way, or the picture ends up
-        at the wrong scale in a headset while looking perfectly sharp."""
+    def test_a_bearing_reads_the_same_place_at_any_resolution(self):
+        """A column at a given bearing has to come from the same place in the
+        photograph however many pixels the frame is stored in, or the picture
+        ends up at the wrong scale while looking perfectly sharp."""
         focal, src = 500.0, 800
-        full = vr180.Patch(180.0, 180.0, 720, 720)
-        spot = vr180.patch(focal, src, src, size=720)
         bearing = math.radians(10.0)
 
         def sampled(p):
@@ -165,7 +135,8 @@ class TestProjection:
                                   torch.device("cpu"), torch.float32)
             return ((float(grid[0, 0, col, 0]) + 1.0) * src - 1.0) / 2.0
 
-        assert sampled(spot) == pytest.approx(sampled(full), abs=1.5)
+        assert sampled(vr180.Patch(180.0, 180.0, 720, 720)) == pytest.approx(
+            sampled(vr180.Patch(180.0, 180.0, 1440, 1440)), abs=1.5)
 
     def test_nothing_behind_the_camera_is_ever_valid(self):
         spot = vr180.Patch(180.0, 180.0, 64, 64)
@@ -183,23 +154,24 @@ class TestProjection:
         expected = 4 * math.asin(math.sin(a / 2) * math.sin(b / 2)) / (2 * math.pi)
         assert vr180.coverage(mask, spot) == pytest.approx(expected, rel=0.02)
 
-    def test_cropping_does_not_change_how_much_sphere_is_real(self):
-        """Fewer stored pixels, the same picture on the same sphere.  If this
-        moves, the crop has quietly changed the field of view."""
+    def test_resolution_does_not_change_how_much_sphere_is_real(self):
+        """More stored pixels, the same picture on the same sphere.  If this
+        moves, the sizing has quietly changed the field of view."""
         focal, src = 256.0, 256
-        full = vr180.Patch(180.0, 180.0, 512, 512)
-        spot = vr180.patch(focal, src, src, size=512)
-        _, full_mask = vr180.project(torch.ones(1, src, src), focal, full)
-        _, crop_mask = vr180.project(torch.ones(1, src, src), focal, spot)
-        assert vr180.coverage(crop_mask, spot) == pytest.approx(
-            vr180.coverage(full_mask, full), rel=0.03)
+        small = vr180.Patch(180.0, 180.0, 256, 256)
+        large = vr180.Patch(180.0, 180.0, 768, 768)
+        _, small_mask = vr180.project(torch.ones(1, src, src), focal, small)
+        _, large_mask = vr180.project(torch.ones(1, src, src), focal, large)
+        assert vr180.coverage(small_mask, small) == pytest.approx(
+            vr180.coverage(large_mask, large), rel=0.03)
 
-    def test_a_cropped_patch_is_mostly_picture(self):
-        """The complaint that started this: the square was 97% black."""
+    def test_the_square_is_mostly_dark(self):
+        """Which is the cost of the format, and the thing cropping was built to
+        avoid before no player turned out to read where the crop belonged."""
         focal, src = 256.0, 256
         spot = vr180.patch(focal, src, src, size=256)
         _, mask = vr180.project(torch.ones(1, src, src), focal, spot)
-        assert float(mask.float().mean()) > 0.85
+        assert float(mask.float().mean()) < 0.35
 
 
 class TestOdsDisparity:
@@ -282,16 +254,24 @@ class TestRender:
         assert float(left[:, ~mask].max()) == pytest.approx(0.0, abs=1e-6)
         assert float(right[:, ~mask].max()) == pytest.approx(0.0, abs=1e-6)
 
-    def test_a_tight_crop_is_not_darkened_all_round_its_edge(self):
-        """The fade belongs at the boundary of the picture, not at the boundary
-        of the file.  Cropped to its own content there is no room to spare, and
-        fading anyway would vignette every photo."""
-        rgb = torch.ones(3, 64, 96)
-        spot = vr180.patch(96.0, 96, 64, size=96)
-        left, _, _ = vr180.render(rgb, torch.full((64, 96), 1 / 3), 96.0, 65.0, 3.0, spot)
-        middle = left[0, spot.height // 2]
-        assert float(middle[len(middle) // 2]) == pytest.approx(1.0, abs=1e-3)
-        assert float(middle[2]) > 0.9, "the left edge is picture, not fade"
+    def test_the_edge_is_faded_rather_than_cut(self):
+        """A hard rectangle floating in a void is what this avoids, so deep
+        inside the picture is untouched and the rim is on its way down."""
+        spot = vr180.Patch(180.0, 180.0, 96, 96)
+        rgb = torch.ones(3, 64, 64)
+        left, _, mask = vr180.render(rgb, torch.full((64, 64), 1 / 3), 64.0, 65.0, 3.0, spot)
+        inside = left[0][mask]
+        assert float(inside.max()) == pytest.approx(1.0, abs=1e-3), "the middle is untouched"
+        assert bool((inside < 0.9).any()), "and the rim is on its way down"
+
+    def test_the_fade_only_touches_the_boundary(self):
+        """It is measured in degrees of sphere, so it must stay a rim rather than
+        eating into the picture -- 4 degrees of a 65-degree lens, not a third."""
+        spot = vr180.Patch(180.0, 180.0, 96, 96)
+        rgb = torch.ones(3, 64, 64)
+        left, _, mask = vr180.render(rgb, torch.full((64, 64), 1 / 3), 64.0, 65.0, 3.0, spot)
+        inside = left[0][mask]
+        assert float((inside > 0.99).float().mean()) > 0.5, "most of it is full strength"
 
     def test_a_flat_scene_leaves_the_two_eyes_alike(self):
         """Everything at the screen plane has no separation, so the pair matches."""

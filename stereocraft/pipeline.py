@@ -69,14 +69,6 @@ class Settings:
     # stored, so this buys picture rather than dark -- see `vr180`.
     vr180_size: object = "auto"
     vr180_cap: int = vr180.MAX_SIZE
-    # Store only the piece of sphere the picture covers, instead of the whole
-    # 180-degree square.  Off by default, and not because it is worse: it saves
-    # four fifths of the pixels and says where the piece belongs, in the fields
-    # both formats provide for exactly that.  Players do not read them.  Skybox
-    # assumes every eye is a full 180 by 180, so a 65-by-91-degree patch comes
-    # out 2.7x too close and 40% stretched sideways -- convincing, and wrong.
-    # The square needs nothing read to be right, so the square is the default.
-    vr180_crop: bool = False
     # Called when a photo will not fit, with the `TooBig` describing it, and
     # expected to return "resize" or "skip".  Left unset nothing is ever
     # silently downscaled: the photo is skipped and the caller told why.
@@ -471,8 +463,8 @@ class Converter:
         cfg = self.settings
         if spot is None:
             spot = vr180.patch(focal_full, rgb.shape[2], rgb.shape[1], cfg.vr180_cap,
-                               None if cfg.vr180_size in (None, 0, "auto") else int(cfg.vr180_size),
-                               full=not cfg.vr180_crop)
+                               None if cfg.vr180_size in (None, 0, "auto")
+                               else int(cfg.vr180_size))
         # Asked against the projection rather than the photo: a baseline is a
         # distance in millimetres either way, but what counts as enough of one is
         # set by how far the picture is stretched to get onto the sphere.
@@ -512,9 +504,8 @@ class Converter:
             size = (max(1, round(sbs.shape[1] * scale)), cfg.max_size)
             sbs = F.interpolate(sbs[None], size=size, mode="bilinear", align_corners=False, antialias=True)[0]
 
-        # Where on the sphere the picture sits, so a player does not stretch a
-        # cropped patch across the whole 180 degrees and show it at life size
-        # times four.  Cropping and saying so are one change, not two.
+        # Where on the sphere the picture sits.  A hemisphere is half of one, so
+        # there is something to say even when the frame is the whole square.
         marks = spherical.gpano(self.spot) if cfg.projection == "vr180" and self.spot else None
         out = save_image(_to_uint8(sbs), output_path(src, dst, cfg.fmt, tag(cfg)),
                          cfg.quality, marks)

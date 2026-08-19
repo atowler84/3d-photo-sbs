@@ -7,16 +7,17 @@ fixed angular scale, so something that subtended thirty degrees to the camera
 subtends thirty degrees to the viewer.  That is the whole gain, and it is a real
 one -- but a photograph has no periphery to put in the rest of the sphere.
 
-**Only the piece that exists is stored.**  A rectilinear frame covers exactly its
-own field of view: the azimuth a column lands at is atan(u/f), which does not
-depend on the row, so the patch of sphere a photograph occupies is its own
-angles and finding it needs no search.  Writing the whole 180-degree square
-instead would spend almost all of it on dark -- a 28mm phone lens fills 15% of a
-hemisphere and a 49mm lens 5%, so at 4096 pixels a side the picture itself would
-come back 918 pixels wide with fifteen megapixels of black around it.  So the
-patch is stored and `spherical` records where on the sphere it belongs, which is
-what `CroppedAreaLeftPixels` and the equirectangular projection bounds are both
-for.  `full` writes the whole square anyway, for a player that reads neither.
+**Most of the frame is dark, and it stays that way.**  A 28mm phone lens fills
+15% of a hemisphere and a 49mm lens 5%, so at 4096 pixels a side the picture
+comes back under a thousand wide with fifteen megapixels of black around it.
+Storing only the piece the lens reached was built, measured, and taken out
+again: it saved four fifths of the pixels and recorded where the piece belonged,
+in the fields both formats provide for exactly that -- and no player read them.
+Skybox assumes every eye is a full 180 by 180, and a 65-by-91-degree patch handed
+to that assumption comes out 2.7 times too close and 40% stretched sideways,
+which is sharp, convincing and wrong.  So the square is what gets written, and
+`Patch` still carries its spans because 180 out of 360 is itself a crop and the
+projection bounds have to say so.
 
 **Where the depth comes from.**  The depth model runs on the photograph, before
 any of this.  It is trained on ordinary perspective images and an equirectangular
@@ -125,40 +126,33 @@ class Patch:
         the picture is on a sphere."""
         return self.width / math.radians(self.span_az)
 
-    @property
-    def cropped(self):
-        return self.span_az < FOV or self.span_el < FOV
-
 
 def per_eye(width, focal_px, cap=MAX_SIZE):
-    """The square to store a `full` frame at.
+    """The square to store each eye at.
 
     Keeping the photograph's own detail means giving the sphere the pixels per
     degree the photograph had, which for a 65-degree lens is a square nearly
     three times the source width and for a 49-degree one four times.  It is asked
-    for and then capped, and the shortfall is the reason cropping is the default.
+    for and then capped, so a big photograph is used softer than it arrived --
+    the price of a frame that needs nothing read to sit at the right size.
     """
     natural = width * FOV / fov(focal_px, width)
     return even(max(64, min(cap, round(natural))))
 
 
-def patch(focal_px, src_w, src_h, cap=MAX_SIZE, size=None, full=False):
-    """Where this photograph sits on the sphere, and how big to store it.
+def patch(focal_px, src_w, src_h, cap=MAX_SIZE, size=None):
+    """The piece of sphere a frame covers, and how big to store it.
 
-    Stored at the source's own width it carries the source's own detail, which is
-    the whole reason for cropping: a 180-degree container spends its pixels on
-    the dark and leaves the picture whatever share its lens happened to earn.
+    Always the hemisphere the format asks for.  Storing only the piece the lens
+    actually reached was built and then taken out again: it saved four fifths of
+    the pixels and recorded where the piece belonged, in the fields both formats
+    provide for exactly that, and no player read them -- Skybox assumes every eye
+    is a full 180 by 180, and showed a 65-by-91-degree patch 2.7 times too close
+    and 40% stretched sideways.  See the history for it if a player ever catches
+    up.
     """
-    if full:
-        side = even(min(cap, size or per_eye(src_w, focal_px, cap)))
-        return Patch(FOV, FOV, side, side)
-    span_az, span_el = fov(focal_px, src_w), fov(focal_px, src_h)
-    width = even(max(64, min(cap, size or src_w)))
-    # Height follows the angles rather than the source's own aspect: equirect is
-    # linear in angle and a rectilinear frame is not, so the two are not the same
-    # ratio.  Following the angles is what keeps the full frame 2:1, which is
-    # what makes the recorded crop offsets mean anything.
-    return Patch(span_az, span_el, width, even(max(64, round(width * span_el / span_az))))
+    side = even(min(cap, size or per_eye(src_w, focal_px, cap)))
+    return Patch(FOV, FOV, side, side)
 
 
 def auto_target(spot):
@@ -166,11 +160,11 @@ def auto_target(spot):
     `stereo.auto_geometry` takes, so that one piece of scene-fitting logic serves
     both projections instead of two that can drift apart.
 
-    It has to be asked of the patch and not of the format.  The shared routine
-    aims at a share of the frame width, and once the frame is a crop rather than
-    the whole 180 degrees, the same share is a different angle: pinned at 180 a
-    65-degree patch came out with under half the separation it had asked for, and
-    looked merely flat rather than wrong.
+    Asked of the patch rather than of the format, which is not the pedantry it
+    looks: the shared routine aims at a share of the frame width, so if the frame
+    is ever less than the whole 180 degrees, the same share is a different angle.
+    Pinned at 180, a 65-degree frame once came out with under half the separation
+    it had asked for and looked merely flat rather than wrong.
     """
     return 100.0 * TARGET_DEG / spot.span_az
 
@@ -244,10 +238,10 @@ def coverage(mask, spot):
     """The share of the hemisphere that is photograph, by solid angle.
 
     Deliberately not the share of the pixels.  Equirectangular packs far more
-    pixels into a degree near the pole than at the equator, and once the frame is
-    cropped the stored pixels are not a hemisphere's worth in the first place --
-    so counting them would say almost nothing.  What a viewer notices is how much
-    of what they can turn to look at is real, and that is solid angle.
+    pixels into a degree near the pole than at the equator, so counting them
+    would flatter or libel the result depending on nothing but where in the frame
+    the picture landed.  What a viewer notices is how much of what they can turn
+    to look at is real, and that is solid angle.
     """
     weight = torch.cos(_elevation(0, spot.height, spot, mask.device, torch.float32))[:, None]
     per_pixel = math.radians(spot.span_az) / spot.width * math.radians(spot.span_el) / spot.height
@@ -261,8 +255,8 @@ def _falloff(mask, spot):
     the ramp wanted; multiplying by the mask again keeps the fade strictly
     inside, so no pixel that came from nowhere is ever shown at any strength.
     The blur replicates at the frame edge rather than padding it with nothing, so
-    a patch cropped tight to its own picture is not darkened around all four
-    sides for the crime of having no room to spare.
+    a picture that does reach the edge is not darkened there for the crime of
+    having no room to spare.
     """
     radius = max(1, round(FALLOFF_DEG * spot.width / spot.span_az))
     soft = stereo._box(mask.float()[None, None], radius)[0, 0].clamp_(0, 1)

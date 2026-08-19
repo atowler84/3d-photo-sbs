@@ -89,16 +89,18 @@ class TestVr180Geometry:
         put every remaining pixel at the wrong bearing."""
         assert video.geometry(self.clip(), VideoSettings(projection="vr180")).margin == 0
 
-    def test_the_patch_is_the_assumed_lens(self):
+    def test_the_size_follows_the_assumed_lens(self):
         """No clip carries intrinsics and the metric model reports none, so the
-        only lens available before the first frame is the assumed one."""
-        g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_crop=True))
-        assert g.patch.span_az == pytest.approx(65.47, abs=0.1)
+        only lens available before the first frame is the assumed one -- and it
+        is what decides how many pixels the hemisphere is worth."""
+        g = video.geometry(self.clip(640, 480), VideoSettings(projection="vr180"))
+        assert g.eye == pytest.approx(640 * 180 / 65.47, abs=2)
 
-    def test_cropping_keeps_the_clip_s_own_width(self):
-        g = video.geometry(self.clip(1280, 720),
-                           VideoSettings(projection="vr180", vr180_crop=True))
-        assert g.patch.width == 1280
+    def test_a_big_clip_stops_at_the_cap_rather_than_the_lens(self):
+        """1280 across 65 degrees wants 3519 across 180, which is past what a
+        hardware decoder will take twice over."""
+        g = video.geometry(self.clip(1280, 720), VideoSettings(projection="vr180"))
+        assert g.eye == VideoSettings.vr180_cap
 
     def test_an_explicit_size_is_taken(self):
         g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_size=1024))
@@ -109,15 +111,12 @@ class TestVr180Geometry:
                            VideoSettings(projection="vr180"))
         assert g.eye == VideoSettings.vr180_cap
 
-    def test_the_square_is_the_default(self):
-        """Skybox assumes every eye is a full 180 by 180, so the square is the
-        shape that needs nothing read to come out right."""
+    def test_each_eye_is_square(self):
+        """Skybox assumes every eye is a full 180 by 180, which is what the
+        frame is, so nothing has to be read for it to come out right."""
         g = video.geometry(self.clip(), VideoSettings(projection="vr180"))
-        assert g.eye == g.height and not g.patch.cropped
-
-    def test_crop_asks_for_the_piece_instead(self):
-        g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_crop=True))
-        assert g.patch.cropped and g.patch.width == 1920
+        assert g.eye == g.height
+        assert g.patch.span_az == g.patch.span_el == 180.0
 
     @pytest.mark.parametrize("w,h", [(321, 241), (641, 361), (1001, 667)])
     def test_both_dimensions_come_out_even(self, w, h):

@@ -297,8 +297,7 @@ def geometry(clip, settings):
         assumed = focal_from_35mm(DEFAULT_FOCAL_35MM, clip.width)
         spot = vr180.patch(assumed, clip.width, clip.height, settings.vr180_cap,
                            None if settings.vr180_size in (None, 0, "auto")
-                           else int(settings.vr180_size),
-                           full=not settings.vr180_crop)
+                           else int(settings.vr180_size))
         return Geometry(margin=0, eye=spot.width, height=spot.height, patch=spot)
     margin = stereo.max_margin(clip.width, settings.limit_pct)
     eye = clip.width - 2 * margin if settings.full_width else clip.width // 2
@@ -543,10 +542,9 @@ def convert_video(src, dst=None, converter=None, on_progress=None, on_frame=None
             if encoder.returncode:
                 raise RuntimeError(f"ffmpeg could not write {out.name}: {_log(encode_log)}")
 
-        # Said last, into the finished file, because ffmpeg will not say it and a
-        # cropped patch that does not say where it belongs gets stretched across
-        # the whole sphere.  A failure here is worth a word rather than an
-        # exception: the clip plays, it is only unlabelled.
+        # Said last, into the finished file, because ffmpeg will not say it at
+        # all.  A failure here is worth a word rather than an exception: the clip
+        # plays, it is only unlabelled.
         marked = False
         if geo.patch is not None:
             marked = spherical.annotate(

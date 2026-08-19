@@ -124,6 +124,8 @@ class TestProjectionBounds:
 
     @pytest.mark.parametrize("equivalent_mm", [13, 28, 49])
     def test_the_angles_survive_the_round_trip(self, equivalent_mm):
+        """Whatever lens it was shot on, the frame is the hemisphere and the
+        bounds have to put it back as one."""
         spot = vr180.patch(lens(equivalent_mm, 2000), 2000, 1500)
         top, bottom, left, right = self.bounds(spot)
         assert (1 - left - right) * 360 == pytest.approx(spot.span_az, abs=0.1)
@@ -135,20 +137,24 @@ class TestProjectionBounds:
         assert left == pytest.approx(right, abs=1e-3)
         assert top == pytest.approx(bottom, abs=1e-3)
 
-    def test_a_full_vr180_frame_crops_a_quarter_off_each_side(self):
-        """Which is the whole of what makes a file VR180 rather than 360: half
-        the sphere across, and nothing off the top or bottom."""
-        spot = vr180.patch(lens(28, 1000), 1000, 1000, full=True)
+    def test_it_crops_a_quarter_off_each_side_and_nothing_off_the_top(self):
+        """Which is the whole of what makes a file VR180 rather than 360, and
+        the reason the bounds are written even though the frame is never
+        cropped tighter than the format's own hemisphere."""
+        spot = vr180.patch(lens(28, 1000), 1000, 1000)
         top, bottom, left, right = self.bounds(spot)
         assert left == pytest.approx(0.25, abs=1e-3)
         assert right == pytest.approx(0.25, abs=1e-3)
         assert top == pytest.approx(0.0, abs=1e-3)
         assert bottom == pytest.approx(0.0, abs=1e-3)
 
-    def test_a_tighter_lens_crops_away_more(self):
+    def test_the_bounds_do_not_follow_the_lens(self):
+        """The frame is the hemisphere whatever was pointed at it, so a long lens
+        and a wide one record the same placement and differ only in how much of
+        the frame turns out to be lit."""
         wide = self.bounds(vr180.patch(lens(13, 2000), 2000, 1500))
         narrow = self.bounds(vr180.patch(lens(49, 2000), 2000, 1500))
-        assert narrow[2] > wide[2]
+        assert wide == pytest.approx(narrow, abs=1e-3)
 
 
 class TestAnnotate:
