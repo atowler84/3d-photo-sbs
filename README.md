@@ -464,8 +464,8 @@ knowing before trusting a `--save-depth` map as a measurement.
 | `--format`, `-q` | `auto`, `95` | Output container and JPEG quality. |
 | `--save-depth` | off | Also write a 16-bit `_depth.png`, near white and far black, scaled across its own range so it can be looked at. The two distances it scaled by go in the PNG's metadata as `stereocraft:near_m` and `stereocraft:far_m`, so `metres = far - (value / 65535) * (far - near)` gets them back. Read [where the metres come from](#where-the-metres-come-from) before trusting them. |
 | `--projection` | `flat` | `flat` writes a rectilinear pair, shown on a virtual screen. `vr180` wraps the same geometry onto a hemisphere at its true angular scale — see [VR180](#vr180). |
-| `--vr180-size` | `auto` | Stored width per eye for `--projection vr180`. Only the piece of sphere the picture covers is stored, so this buys picture rather than dark. `auto` keeps the source's own width, capped at 4096 (2048 for a clip). |
-| `--vr180-full` | off | Write the whole 180-degree square, dark and all, instead of the piece that exists. Costs most of the resolution; for a player that reads neither GPano nor the projection bounds. |
+| `--vr180-size` | `auto` | Stored width per eye for `--projection vr180`. `auto` keeps as much of the source's own detail as fits, capped at 4096 (2048 for a clip). |
+| `--vr180-crop` | off | Store only the piece of sphere the picture covers, rather than the whole 180-degree square. Saves four fifths of the pixels and needs a player that reads GPano or the projection bounds — Skybox does not, and shows a cropped patch far too close and stretched. |
 | `--device` | `auto` | `cuda`, `mps` or `cpu`. |
 | `--oversize` | `ask` | A photo too big for memory: `ask` what to do, `skip` it, or `resize` it to the largest size that fits. |
 
@@ -561,7 +561,7 @@ It is also mostly black, and that is not a bug to be fixed later.
 
 ```
 stereocraft --projection vr180 photo.jpg
-photo_180_sbs.jpg  1284x896  4mm@0.3m  25% of a sphere (28mm assumed)
+photo_180_sbs.jpg  3536x1768  4mm@0.3m  25% of a sphere (28mm assumed)
 ```
 
 The `25% of a sphere` is how much of the hemisphere the photograph reaches, by
@@ -572,19 +572,20 @@ stored**, and the file says where on the sphere it belongs — GPano for a photo
 projection bounds for a clip. The edge is faded rather than cut, an honest
 absence reading better than a hard-edged rectangle floating in a void.
 
-Writing the whole 180-degree square instead would spend almost all of it on
-nothing, and spend the resolution with it:
+**Why the square, when the dark is most of it.** Because no player reads the
+crop. `--vr180-crop` stores just the piece and records where it belongs, in the
+fields both formats provide for exactly that — and Skybox ignores them, assuming
+every eye is a full 180 by 180. A 65-by-91-degree patch handed to that
+assumption comes out **2.7× too close and 40% stretched sideways**: convincing,
+sharp, and wrong. The square needs nothing read to be right.
 
-| | Stored | Lit | Picture is |
+| | Stored | Lit | Shown by a player that assumes 180×180 |
 | --- | --- | --- | --- |
-| cropped (default) | 1284 × 896 | 96% | 642px per eye |
-| `--vr180-full` | 3536 × 1768 | 18% | 642px per eye |
+| square (default) | 3536 × 1768 | 18% | correctly |
+| `--vr180-crop` | 1284 × 896 | 96% | 2.7× too close, 40% stretched |
 
-Same photograph, same place on the sphere, same apparent size in a headset —
-five times the pixels to say it. It is worse than the table looks on a long
-lens: at 4096 a side a 49mm photo comes back 918 pixels wide surrounded by
-fifteen megapixels of black, which is what `--vr180-size` now buys you out of,
-because it sizes the picture rather than the container.
+So the cropping is still there, still correct, and still costs four fifths of
+the pixels to go without — it is simply waiting for a player to catch up.
 
 | Lens | Field of view | Real | Invented |
 | --- | --- | --- | --- |
@@ -593,12 +594,12 @@ because it sizes the picture rather than the container.
 | 16mm ultrawide | 96.7° × 73.7° | 30% | 70% |
 | 13mm ultrawide | 108.3° × 92.2° | 40% | 60% |
 
-**Resolution.** Cropped, the patch is stored at the source's own width by
-default, which is the width that keeps the source's own detail — so nothing is
-thrown away and nothing is invented. `--vr180-size` overrides it, capped at 4096
-for a photo and 2048 for a clip. `--vr180-full` goes back to the square, where
-keeping that same detail would need 11000 pixels a side for an ordinary phone
-photo and four times more again for a short telephoto.
+**Resolution.** The square is sized to keep the photograph's own detail where
+it can, which for a 65-degree lens means a side nearly three times the source
+width, capped at 4096 for a photo and 2048 for a clip. Past the cap the picture
+is used softer than it arrived — a 49mm photo at 4096 comes back 918 pixels wide
+with fifteen megapixels of black around it, which is the cost `--vr180-crop`
+avoids and cannot yet be spent. `--vr180-size` sets the stored width by hand.
 
 **It is a different question from the flat path, so it is asked differently.**
 `--target` and `--limit` are percentages of frame width, and a percentage of a
@@ -627,23 +628,27 @@ bounds — which is not a VR180 special case at all, a VR180 file being a
 writes neither, so the boxes are spliced in afterwards and every chunk offset in
 the file moved to match.
 
-A player that reads none of it will stretch a cropped patch across the whole
-sphere rather than showing it small, so `--vr180-full` is there as the way out.
-`--cross` writes stereo mode 4, right-left, which ffmpeg itself discards — a
-clip that goes unlabelled asks a question, where one labelled left-right would
+None of which any player has yet been observed to act on, which is why the
+square is the default and `--vr180-crop` the option rather than the other way
+round. `--cross` writes stereo mode 4, right-left, which ffmpeg itself discards —
+a clip that goes unlabelled asks a question, where one labelled left-right would
 confidently tell a headset to swap the viewer's eyes.
+
+One consequence worth knowing: a VR180 clip carries `st3d`, so a **desktop**
+player that reads it will show a single eye rather than the side-by-side pair.
+That is the metadata working. Use `--projection flat` for 2D spot checks.
 
 **The one thing it still does not do** is invent the periphery, which is the
 honest state of the art: a 512-tall diffusion model filling 85% of the frame,
 hallucinated depth behind hallucinated colour, on an app whose whole argument is
 that its geometry is measured rather than guessed.
 
-Video takes the flag too. The patch has to be settled before the first frame is
+Video takes the flag too. The frame has to be settled before the first one is
 decoded — every frame must come out the size of the first — and no clip carries
 a focal length, so it assumes the same 28mm `depth` falls back on. A moving
-picture is still the weaker case: cropping saves the pixels but not the missing
-periphery, and every frame pays for a projection nobody asked to see.
-`--projection flat` remains the default everywhere.
+picture is still the weaker case: the square costs the pixels and the missing
+periphery is missing either way. `--projection flat` remains the default
+everywhere.
 
 ## Viewing
 

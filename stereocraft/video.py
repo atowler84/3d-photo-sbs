@@ -298,7 +298,7 @@ def geometry(clip, settings):
         spot = vr180.patch(assumed, clip.width, clip.height, settings.vr180_cap,
                            None if settings.vr180_size in (None, 0, "auto")
                            else int(settings.vr180_size),
-                           settings.vr180_full)
+                           full=not settings.vr180_crop)
         return Geometry(margin=0, eye=spot.width, height=spot.height, patch=spot)
     margin = stereo.max_margin(clip.width, settings.limit_pct)
     eye = clip.width - 2 * margin if settings.full_width else clip.width // 2

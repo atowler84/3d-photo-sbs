@@ -92,11 +92,12 @@ class TestVr180Geometry:
     def test_the_patch_is_the_assumed_lens(self):
         """No clip carries intrinsics and the metric model reports none, so the
         only lens available before the first frame is the assumed one."""
-        g = video.geometry(self.clip(), VideoSettings(projection="vr180"))
+        g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_crop=True))
         assert g.patch.span_az == pytest.approx(65.47, abs=0.1)
 
     def test_cropping_keeps_the_clip_s_own_width(self):
-        g = video.geometry(self.clip(1280, 720), VideoSettings(projection="vr180"))
+        g = video.geometry(self.clip(1280, 720),
+                           VideoSettings(projection="vr180", vr180_crop=True))
         assert g.patch.width == 1280
 
     def test_an_explicit_size_is_taken(self):
@@ -108,9 +109,15 @@ class TestVr180Geometry:
                            VideoSettings(projection="vr180"))
         assert g.eye == VideoSettings.vr180_cap
 
-    def test_full_writes_the_square_instead(self):
-        g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_full=True))
+    def test_the_square_is_the_default(self):
+        """Skybox assumes every eye is a full 180 by 180, so the square is the
+        shape that needs nothing read to come out right."""
+        g = video.geometry(self.clip(), VideoSettings(projection="vr180"))
         assert g.eye == g.height and not g.patch.cropped
+
+    def test_crop_asks_for_the_piece_instead(self):
+        g = video.geometry(self.clip(), VideoSettings(projection="vr180", vr180_crop=True))
+        assert g.patch.cropped and g.patch.width == 1920
 
     @pytest.mark.parametrize("w,h", [(321, 241), (641, 361), (1001, 667)])
     def test_both_dimensions_come_out_even(self, w, h):

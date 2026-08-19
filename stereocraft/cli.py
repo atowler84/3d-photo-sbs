@@ -122,10 +122,11 @@ def build_parser():
                              "sphere the picture covers is stored, so this buys picture rather "
                              "than dark. (default: the source's own width, capped at 4096 for a "
                              "photo and 2048 for a clip)")
-    parser.add_argument("--vr180-full", action="store_true",
-                        help="write the whole 180-degree square instead of the piece that "
-                             "exists, dark and all. Costs most of the resolution, and is only "
-                             "for a player that reads neither GPano nor the projection bounds")
+    parser.add_argument("--vr180-crop", action="store_true",
+                        help="store only the piece of sphere the picture covers, rather than the "
+                             "whole 180-degree square. Saves four fifths of the pixels and needs "
+                             "a player that reads GPano or the projection bounds -- Skybox does "
+                             "not, and shows a cropped patch far too close and stretched")
     parser.add_argument("--cross", action="store_true", help="write right|left for cross-eyed viewing")
     parser.add_argument("--max-size", type=int, default=0, help="cap the output width, 0 for native")
     parser.add_argument("--format", choices=("auto", "jpg", "png"), default="auto", dest="fmt")
@@ -202,7 +203,7 @@ def settings_for(args, video):
         cross_eyed=args.cross,
         device=args.device,
         projection=args.projection,
-        vr180_full=args.vr180_full,
+        vr180_crop=args.vr180_crop,
         on_oversize=oversize_handler(args.oversize),
     )
     if video:
@@ -265,14 +266,13 @@ def main(argv=None):
 
     # One converter for the batch either way, so the depth model is loaded once;
     # only the settings on it change as the run moves between stills and clips.
-    if args.projection == "vr180" and not args.vr180_full:
-        # A cropped patch that is not understood is not shown small, it is shown
-        # stretched across the whole sphere -- so the one thing worth saying up
-        # front is which way out it goes wrong, and what to do about it.
-        print("vr180: only the part of the sphere the picture covers is stored, "
-              "with GPano (photos) and projection bounds (clips) to say where it "
-              "belongs. A player that reads neither will stretch it -- use "
-              "--vr180-full for that.", file=sys.stderr)
+    if args.projection == "vr180" and args.vr180_crop:
+        # Worth one line, because the failure is not a picture that looks broken
+        # -- it is one that looks fine and sits at the wrong size.
+        print("vr180: --vr180-crop needs a player that reads GPano or the "
+              "projection bounds. One that does not assumes a full 180 by 180 "
+              "and will show the picture too close and stretched sideways.",
+              file=sys.stderr)
     converter = Converter(settings_for(args, video=False))
     for_photos, for_videos = converter.settings, settings_for(args, video=True)
     failures = skipped = 0

@@ -80,36 +80,37 @@ class TestVr180:
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
         spot = info["patch"]
         assert info["output_size"] == (2 * spot.width, spot.height)
-        assert spot.width == 192
+        assert spot.width == spot.height == 192, "the default frame is the square"
 
-    def test_the_stored_frame_is_mostly_picture(self, converter, photo, tmp_path):
-        """The complaint that started this: the 180-degree square spent 97% of
-        itself on dark that no lens had ever pointed at."""
-        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
+    def test_a_cropped_frame_is_mostly_picture(self, converter, photo, tmp_path):
+        """Cropping still does what it was built for -- it is simply not the
+        default, because no player yet reads where the piece belongs."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192,
+                            vr180_crop=True)
         out = np.asarray(Image.open(info["output"])).astype(int)
         lit = (out.max(axis=2) > 8).mean()
         assert lit > 0.8, "a cropped patch should be picture nearly all the way out"
 
-    def test_the_square_is_mostly_dark_which_is_why_it_is_not_the_default(
+    def test_the_square_is_mostly_dark_and_is_the_default_anyway(
             self, converter, photo, tmp_path):
-        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192,
-                            vr180_full=True)
+        """The dark is the price of a frame that needs no metadata read to sit
+        at the right size, which is the trade every player currently forces."""
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
         out = np.asarray(Image.open(info["output"])).astype(int)
         assert (out.max(axis=2) > 8).mean() < 0.35
 
     def test_cropping_does_not_change_how_much_sphere_is_real(self, converter, photo, tmp_path):
         """Fewer pixels, same picture, same place.  If this moves, the crop has
         quietly changed the field of view rather than just the file size."""
-        tight = self.convert(converter, photo, tmp_path / "a.jpg", vr180_size=192)
-        square = self.convert(converter, photo, tmp_path / "b.jpg", vr180_size=192,
-                              vr180_full=True)
+        tight = self.convert(converter, photo, tmp_path / "a.jpg", vr180_size=192,
+                             vr180_crop=True)
+        square = self.convert(converter, photo, tmp_path / "b.jpg", vr180_size=192)
         assert tight["coverage"] == pytest.approx(square["coverage"], rel=0.05)
 
     def test_the_eyes_differ_but_the_void_does_not(self, converter, photo, tmp_path):
         """Where there is picture the two eyes must disagree; where there is
         nothing they must agree exactly, both being black."""
-        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192,
-                            vr180_full=True)
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=192)
         out = np.asarray(Image.open(info["output"])).astype(int)
         left, right = out[:, :192], out[:, 192:]
         assert not np.array_equal(left, right)
@@ -142,8 +143,9 @@ class TestVr180:
         info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_size=128)
         assert info["lens"] == "assumed", "the fixture photo carries no EXIF"
 
-    def test_auto_sizing_keeps_the_photo_s_own_width(self, converter, photo, tmp_path):
-        info = self.convert(converter, photo, tmp_path / "vr.jpg")
+    def test_auto_sizing_keeps_the_photo_s_own_width_when_cropped(
+            self, converter, photo, tmp_path):
+        info = self.convert(converter, photo, tmp_path / "vr.jpg", vr180_crop=True)
         assert info["patch"].width == 320
 
 

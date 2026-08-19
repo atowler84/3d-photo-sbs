@@ -69,10 +69,14 @@ class Settings:
     # stored, so this buys picture rather than dark -- see `vr180`.
     vr180_size: object = "auto"
     vr180_cap: int = vr180.MAX_SIZE
-    # Write the whole 180-degree square, dark and all, instead of the piece that
-    # exists.  Costs almost all of the resolution and is here for a player that
-    # reads neither GPano nor the projection bounds.
-    vr180_full: bool = False
+    # Store only the piece of sphere the picture covers, instead of the whole
+    # 180-degree square.  Off by default, and not because it is worse: it saves
+    # four fifths of the pixels and says where the piece belongs, in the fields
+    # both formats provide for exactly that.  Players do not read them.  Skybox
+    # assumes every eye is a full 180 by 180, so a 65-by-91-degree patch comes
+    # out 2.7x too close and 40% stretched sideways -- convincing, and wrong.
+    # The square needs nothing read to be right, so the square is the default.
+    vr180_crop: bool = False
     # Called when a photo will not fit, with the `TooBig` describing it, and
     # expected to return "resize" or "skip".  Left unset nothing is ever
     # silently downscaled: the photo is skipped and the caller told why.
@@ -468,7 +472,7 @@ class Converter:
         if spot is None:
             spot = vr180.patch(focal_full, rgb.shape[2], rgb.shape[1], cfg.vr180_cap,
                                None if cfg.vr180_size in (None, 0, "auto") else int(cfg.vr180_size),
-                               cfg.vr180_full)
+                               full=not cfg.vr180_crop)
         # Asked against the projection rather than the photo: a baseline is a
         # distance in millimetres either way, but what counts as enough of one is
         # set by how far the picture is stretched to get onto the sphere.
